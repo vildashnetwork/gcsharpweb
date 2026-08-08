@@ -103,12 +103,38 @@ DEFAULT_MODEL_CHAIN = [
 ]
 
 
+def _sanitize_model_id(raw: str) -> str:
+    """Defensively clean a model ID pulled from an env var. Guards against
+    two common copy-paste mistakes when setting env vars in dashboards like
+    Render's:
+      1. Pasting the whole "KEY=VALUE" line into the Value field, e.g.
+         "OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free" instead
+         of just "nvidia/nemotron-3-ultra-550b-a55b:free".
+      2. Leaving surrounding quotes in, e.g. '"nvidia/..."'.
+    Without this, a single mistyped env var silently breaks the entire
+    model chain (every call 400s with "not a valid model ID") with no
+    obvious cause in the app logs beyond the raw OpenRouter error text.
+    """
+    s = raw.strip()
+    m = re.match(r'^[A-Z][A-Z0-9_]*=(.+)$', s)
+    if m:
+        logger.warning(
+            f"OPENROUTER_MODEL env var looks like it contains a 'KEY=' prefix "
+            f"({s!r}) — stripping it. Fix the Render env var to contain only "
+            f"the model ID, not the full 'KEY=VALUE' line."
+        )
+        s = m.group(1).strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s
+
+
 def _get_model_chain() -> List[str]:
     """Build the ordered list of models to try. Primary model (from env)
     is tried first, followed by any configured fallbacks, de-duplicated."""
-    primary = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0])
+    primary = _sanitize_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0]))
     extra_raw = os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
-    extra = [m.strip() for m in extra_raw.split(",") if m.strip()]
+    extra = [_sanitize_model_id(m) for m in extra_raw.split(",") if m.strip()]
     chain = [primary] + extra + DEFAULT_MODEL_CHAIN
     seen = set()
     ordered = []
@@ -165,7 +191,10 @@ class SimpleLLM:
                 logger.warning(f"OpenRouter model {model} returned empty content")
                 return None
             except (KeyError, IndexError, ValueError) as e:
-                logger.warning(f"OpenRouter model {model} returned unparseable response: {e}")
+                logger.warning(
+                    f"OpenRouter model {model} returned unparseable response: {e}. "
+                    f"Raw body (truncated): {response.text[:300]!r}"
+                )
                 return None
 
         # Non-200: log and let the caller try the next model
