@@ -44,7 +44,7 @@ export default function Onboarding() {
         try {
             const { data } = await api.put("/auth/profile", { ...form, onboarded: true });
             setUser(data);
-            api.post("/seed").catch(() => {});
+            api.post("/seed").catch(() => { });
             toast.success("You're all set!");
             navigate(form.role === "teacher" ? "/teacher" : "/dashboard", { replace: true });
         } catch {
@@ -63,7 +63,7 @@ export default function Onboarding() {
     const roleCards = [
         { key: "student", icon: GraduationCap, title: "Student", desc: "Practice past questions, learn with AI, track progress." },
         { key: "teacher", icon: BookUser, title: "Teacher", desc: "Post lessons, share papers, earn per student view." },
-        { key: "admin", icon: Shield, title: "Admin", desc: "Oversee content and platform activity." },
+        // { key: "admin", icon: Shield, title: "Admin", desc: "Oversee content and platform activity." },
     ];
 
     return (
