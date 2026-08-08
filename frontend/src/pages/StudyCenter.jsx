@@ -6,7 +6,7 @@ import {
 } from "../components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
 import { Button } from "../components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "../components/ui/dialog";
 import { BookOpen, PlayCircle, FileText, Sparkles, Coins } from "lucide-react";
 import { toast } from "sonner";
 
@@ -140,6 +140,7 @@ export default function StudyCenter() {
                 <DialogContent className="max-w-3xl">
                     <DialogHeader>
                         <DialogTitle className="font-display">{active?.title}</DialogTitle>
+                        <DialogDescription>{active?.subject} · {active?.level} · by {active?.teacher_name}</DialogDescription>
                     </DialogHeader>
                     {active && (
                         <div className="space-y-4">

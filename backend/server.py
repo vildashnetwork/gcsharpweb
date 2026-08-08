@@ -405,10 +405,6 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         "'Related topics' list when helpful. Be encouraging and exam-focused."
     )
     chat = _new_chat(session_id, system)
-    # rebuild context from stored history
-    for m in history:
-        if m["role"] == "user":
-            await chat.get_messages  # noop; history handled below
 
     async def event_gen():
         full = ""

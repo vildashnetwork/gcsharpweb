@@ -12,7 +12,7 @@ import {
     Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "../components/ui/select";
 import {
-    Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
+    Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription,
 } from "../components/ui/dialog";
 import { BookMarked, Users, Coins, PlayCircle, Plus, Upload } from "lucide-react";
 import { toast } from "sonner";
@@ -76,7 +76,7 @@ export default function TeacherPortal() {
                         <Button className="shadow-glow gap-2" data-testid="new-lesson-btn"><Plus className="h-4 w-4" /> New Lesson</Button>
                     </DialogTrigger>
                     <DialogContent>
-                        <DialogHeader><DialogTitle className="font-display flex items-center gap-2"><Upload className="h-5 w-5" /> Publish a Lesson Video</DialogTitle></DialogHeader>
+                        <DialogHeader><DialogTitle className="font-display flex items-center gap-2"><Upload className="h-5 w-5" /> Publish a Lesson Video</DialogTitle><DialogDescription>Share a video lesson and earn 90 FCFA per qualified student view.</DialogDescription></DialogHeader>
                         <div className="space-y-4 py-2">
                             <div className="space-y-2"><Label>Title</Label><Input data-testid="course-title" value={form.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Chain Rule Masterclass" /></div>
                             <div className="grid grid-cols-2 gap-4">
