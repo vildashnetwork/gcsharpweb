@@ -47,11 +47,11 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
                     <span className="text-xs text-slate-400">Scene {idx + 1} / {scenes.length}</span>
                 </div>
                 <h3 className="relative z-10 font-display font-semibold text-lg mb-4 text-blue-200">{scene?.heading}</h3>
-                <div className="relative z-10 space-y-2 font-mono text-sm sm:text-base">
+                <div className="relative z-10 space-y-2 text-sm sm:text-base">
                     {(scene?.board || []).map((line, i) => (
-                        <p key={i} className={`transition-all duration-300 ${i < revealed ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2"}`}>
-                            {line}
-                        </p>
+                        <div key={i} className={`transition-all duration-300 [&_p]:m-0 ${i < revealed ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2"}`}>
+                            <Markdown className="md-body-invert">{line}</Markdown>
+                        </div>
                     ))}
                 </div>
                 {playing && (

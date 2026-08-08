@@ -40,5 +40,15 @@ Premium AI-powered e-learning platform for Cameroon students (GCE O Level, GCE A
 - P2: questions_cache TTL/refresh; split server.py into routers.
 
 ## Next Tasks
-- Build Paper 2 AI mode + PDF Reader with AI assistant split-pane.
-- Add Admin role dashboard.
+- Build Admin role dashboard.
+
+## Update — 2026-06-08 (Papers + GCSHARP rename)
+- Renamed brand **GCSMART → GCSHARP** (Global Classroom Sharpening Potential) across app.
+- **Past Papers module**: 12 seeded papers (5 real uploaded A-Level Pure Maths PDFs + 7 test papers) with Level/Subject/Year/Paper + title-search **filters**.
+- **Custom PDF reader** (react-pdf) with page nav + zoom; PDF served via authenticated backend proxy.
+- **Paper 1**: "Generate Step-by-Step Q&A" — AI (gpt-5.4) extracts questions from the PDF (pypdf) and returns worked solutions.
+- **Paper 2/3**: "Generate Video Solution" — AI builds whiteboard scenes + **OpenAI TTS (tts-1)** voice narration, played in a custom VideoSolutionPlayer.
+- **Highlight → "Ask GC AI"** floating popup solves the selected question.
+- **Drafts** tab: save/bookmark papers for quick access.
+- AI output rendered as clean formatted markdown + math (react-markdown + KaTeX); Ask-AI answer & Q&A panels are scrollable.
+- Verified: iteration_1/2 (100%), iteration_3 (formatting) — all flows pass; AI is real, not mocked.
