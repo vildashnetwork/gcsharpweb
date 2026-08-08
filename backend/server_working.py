@@ -75,20 +75,31 @@ app.add_middleware(
 # The previous version fell back to Hugging Face's free inference API when
 # OpenRouter failed. On Render that call fails with:
 #   [Errno -5] No address associated with hostname
-# This is a DNS resolution failure for api-inference.huggingface.co, which
-# is common in Render's free-tier network environment (and the HF free
-# inference API is unreliable for arbitrary models regardless). Rather than
-# fight Render's DNS/network config, we remove that dependency entirely and
-# make OpenRouter itself resilient by trying several models in order before
-# giving up. This also fixes the "OpenRouter API error: 404" case, since a
-# 404 (model not found / not currently free) just moves to the next model
-# instead of failing the whole request.
+# This was a DNS resolution failure for api-inference.huggingface.co, common
+# in Render's free-tier network environment. That dependency has been removed
+# entirely — OpenRouter itself now tries several models in order before
+# giving up.
+#
+# UPDATE (Aug 2026): Google, Meta, Mistral, and Qwen all pulled the free
+# (:free) tier of their flagship models from OpenRouter around mid-2026.
+# Requests to the old slugs (gemini-2.5-flash:free, llama-3.3-70b:free,
+# qwen-2.5-72b:free, mistral-7b:free) now return 404 with a message telling
+# you to switch to the paid slug. DEFAULT_MODEL_CHAIN below has been updated
+# to models that are verified free on OpenRouter as of August 2026, with
+# "openrouter/free" (OpenRouter's own auto-router across whatever is
+# currently free) as the final fallback so this keeps working even if the
+# specific named models get deprecated again later. If this happens again,
+# check https://openrouter.ai/models filtered to Price: Free before editing
+# this list — the free-model lineup rotates every few months.
 
 DEFAULT_MODEL_CHAIN = [
-    "google/gemini-2.5-flash:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-72b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-4-31b-it:free",              # strong general-purpose free model, vision + tool support
+    "nvidia/nemotron-3-ultra-550b-a55b:free",  # large, high-quality, 1M context window
+    "openai/gpt-oss-20b:free",                 # OpenAI's free-tier open model
+    "openrouter/free",                         # OpenRouter's own auto-router: always resolves to
+                                                # *some* currently-working free model, so this acts
+                                                # as a self-healing last resort even if the models
+                                                # above get deprecated again in the future.
 ]
 
 
