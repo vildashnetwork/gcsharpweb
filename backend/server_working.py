@@ -814,6 +814,80 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         }
     )
 
+@api_router.get("/ai/health")
+async def ai_health(user: dict = Depends(get_current_user)):
+    """Diagnostic endpoint: tests each model in the fallback chain with a
+    trivial prompt and reports exactly what happened for each one. Use this
+    instead of digging through Render logs when the AI keeps returning the
+    generic 'trouble reaching the AI service' message — it will tell you
+    whether the problem is a missing/invalid key, rate limiting, or a
+    specific model being unavailable.
+    """
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    result = {
+        "api_key_configured": bool(api_key),
+        "api_key_prefix": (api_key[:12] + "...") if api_key else None,
+        "models_tested": [],
+    }
+
+    if not api_key:
+        result["diagnosis"] = "OPENROUTER_API_KEY is not set in this environment. Set it in Render's dashboard under Environment, not just your local .env."
+        return result
+
+    models = _get_model_chain()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": os.environ.get("APP_URL", "https://gcsharpweb.onrender.com"),
+        "X-Title": os.environ.get("APP_NAME", "GCSMART AI"),
+    }
+    any_success = False
+    async with httpx.AsyncClient(timeout=15.0) as hc:
+        for model in models:
+            entry = {"model": model}
+            try:
+                resp = await hc.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": "Reply with just: OK"}],
+                        "max_tokens": 10,
+                    },
+                )
+                entry["status_code"] = resp.status_code
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    entry["ok"] = bool(content and content.strip())
+                    entry["sample_response"] = (content or "")[:60]
+                    if entry["ok"]:
+                        any_success = True
+                else:
+                    entry["ok"] = False
+                    try:
+                        err = resp.json()
+                        entry["error"] = err.get("error", {}).get("message", resp.text[:200])
+                    except Exception:
+                        entry["error"] = resp.text[:200]
+            except httpx.RequestError as e:
+                entry["ok"] = False
+                entry["error"] = f"Network error: {e}"
+            result["models_tested"].append(entry)
+
+    if any_success:
+        result["diagnosis"] = "At least one model works. If users still see failures, it may be intermittent rate limiting — check timestamps against traffic."
+    elif all(m.get("status_code") == 401 for m in result["models_tested"]):
+        result["diagnosis"] = "All models returned 401 Unauthorized. The API key is invalid, expired, or was revoked. Generate a new key at openrouter.ai/keys and update it in Render's Environment settings."
+    elif all(m.get("status_code") == 429 for m in result["models_tested"]):
+        result["diagnosis"] = "All models returned 429 Rate Limited. Free-tier OpenRouter models share a global rate limit pool. Consider adding a paid model as a last-resort fallback, or check openrouter.ai/activity for your usage."
+    elif all(m.get("status_code") == 404 for m in result["models_tested"]):
+        result["diagnosis"] = "All models returned 404. These model slugs may no longer exist on OpenRouter — check https://openrouter.ai/models for current free-tier model IDs and update DEFAULT_MODEL_CHAIN."
+    else:
+        result["diagnosis"] = "Mixed failures across models — see individual entries above for specific errors."
+
+    return result
+
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
     """Explain a concept using AI (local math solver first)."""
