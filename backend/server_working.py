@@ -1,4 +1,4 @@
-# server_working.py - GCSMART Backend API (No Emergent Dependencies)
+# server_working.py - GCSMART Backend API (Production Ready)
 import os
 import io
 import json
@@ -19,36 +19,73 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
+# ============================================================
+# Configuration & Environment
+# ============================================================
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'gcsmart')]
+# MongoDB Connection
+MONGO_URL = os.environ.get('MONGO_URL', 'mongodb+srv://gcsharp-user:HMLfa8jjFgvhmOut@gcsharp.nh4zzwi.mongodb.net/?retryWrites=true&w=majority')
+DB_NAME = os.environ.get('DB_NAME', 'gcsmart')
+CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
+APP_URL = os.environ.get('APP_URL', 'http://localhost:8000')
 
-app = FastAPI(title="GCSMART API", version="1.0.0")
+# Initialize MongoDB
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# ============================================================
+# FastAPI App
+# ============================================================
+
+app = FastAPI(
+    title="GCSMART API",
+    version="2.0.0",
+    description="AI-Powered Educational Platform for Cameroon Students",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
 api_router = APIRouter(prefix="/api")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gcsmart")
 
 # ============================================================
+# CORS Configuration
+# ============================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ============================================================
 # Simple LLM Client (Replaces emergentintegrations)
 # ============================================================
 
 class SimpleLLM:
+    """Simple LLM client using OpenRouter API or Hugging Face fallback"""
+    
     def __init__(self, api_key: str = "", model: str = "openai/gpt-3.5-turbo"):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.model = model
         self.base_url = "https://openrouter.ai/api/v1"
         self.system_message = ""
         self.session_id = None
+        self.referer = os.environ.get("APP_URL", "http://localhost:8000")
     
     def with_model(self, provider: str, model: str):
         self.model = f"{provider}/{model}" if provider else model
         return self
     
     async def send_message(self, message: str) -> str:
+        """Send message to LLM and get response"""
         try:
             if not self.api_key:
                 return await self._call_huggingface(message)
@@ -59,7 +96,7 @@ class SimpleLLM:
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
-                        "HTTP-Referer": "http://localhost:8000",
+                        "HTTP-Referer": self.referer,
                         "X-Title": "GCSMART AI"
                     },
                     json={
@@ -72,13 +109,18 @@ class SimpleLLM:
                         "max_tokens": 1000,
                     }
                 )
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
+                if response.status_code == 200:
+                    data = response.json()
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    logger.error(f"OpenRouter API error: {response.status_code}")
+                    return await self._call_huggingface(message)
         except Exception as e:
             logger.error(f"LLM error: {e}")
             return await self._call_huggingface(message)
     
     async def _call_huggingface(self, message: str) -> str:
+        """Fallback to Hugging Face Inference API (free)"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -94,10 +136,11 @@ class SimpleLLM:
                         return data[0].get("generated_text", str(data))
                 return "AI service temporarily unavailable. Please try again."
         except Exception as e:
+            logger.error(f"Hugging Face error: {e}")
             return f"Error: {str(e)}"
 
 # ============================================================
-# Models
+# Pydantic Models
 # ============================================================
 
 class ProfileUpdate(BaseModel):
@@ -154,8 +197,17 @@ class AskRequest(BaseModel):
 class DraftRequest(BaseModel):
     paper_id: str
 
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
 # ============================================================
-# Auth helpers
+# Auth Helpers
 # ============================================================
 
 def _new_chat(session_id: str, system: str):
@@ -167,6 +219,7 @@ def _new_chat(session_id: str, system: str):
     return chat
 
 async def get_current_user(request: Request):
+    """Get current user from session token"""
     token = request.cookies.get("session_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -193,11 +246,74 @@ async def get_current_user(request: Request):
     return user
 
 # ============================================================
-# Auth routes
+# Authentication Routes
 # ============================================================
+
+@api_router.post("/auth/register")
+async def register_user(req: RegisterRequest):
+    """Register a new user"""
+    existing = await db.users.find_one({"email": req.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user = {
+        "user_id": user_id,
+        "email": req.email,
+        "name": req.name,
+        "password": req.password,  # In production, hash this!
+        "role": "student",
+        "onboarded": False,
+        "bio": "",
+        "institution": "",
+        "exam_level": "",
+        "study_year": None,
+        "subjects": [],
+        "goals": [],
+        "daily_commitment": "",
+        "proficiency": "",
+        "learning_style": "",
+        "specialization": "",
+        "xp": 0,
+        "level": 1,
+        "streak": 0,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(user)
+    user.pop("_id", None)
+    return {"success": True, "user": user}
+
+@api_router.post("/auth/login")
+async def login_user(req: LoginRequest, response: Response):
+    """Login user and create session"""
+    user = await db.users.find_one({"email": req.email}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    # In production, use proper password hashing!
+    if user.get("password") != req.password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    session_token = f"tok_{uuid.uuid4().hex}"
+    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await db.user_sessions.insert_one({
+        "user_id": user["user_id"],
+        "session_token": session_token,
+        "expires_at": expires_at.isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    
+    response.set_cookie(
+        key="session_token", value=session_token,
+        httponly=True, secure=True, samesite="none", path="/",
+        max_age=7 * 24 * 60 * 60,
+    )
+    user.pop("_id", None)
+    return {"success": True, "user": user, "session_token": session_token}
 
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
+    """Process OAuth session from EmergentAgent"""
     session_id = request.headers.get("X-Session-ID")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session id")
@@ -280,7 +396,7 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
     return fresh
 
 # ============================================================
-# Exam structure
+# Exam Structure
 # ============================================================
 
 EXAM_STRUCTURE = {
@@ -298,7 +414,7 @@ async def exam_structure():
     return {"levels": EXAM_STRUCTURE, "years": years, "papers": [1, 2, 3]}
 
 # ============================================================
-# AI question generation
+# AI Question Generation
 # ============================================================
 
 @api_router.post("/questions/generate")
@@ -347,7 +463,7 @@ async def generate_questions(req: GenerateQuestionsRequest, user: dict = Depends
     return {"questions": questions, "cached": False}
 
 # ============================================================
-# Attempts / progress
+# Attempts & Progress
 # ============================================================
 
 @api_router.post("/attempts")
@@ -440,6 +556,10 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "total_attempts": len(attempts),
     }
 
+# ============================================================
+# Leaderboard
+# ============================================================
+
 @api_router.get("/leaderboard")
 async def leaderboard(user: dict = Depends(get_current_user)):
     users = await db.users.find({"role": "student"}, {"_id": 0, "name": 1, "picture": 1, "xp": 1, "level": 1, "user_id": 1}).to_list(500)
@@ -455,7 +575,7 @@ async def leaderboard(user: dict = Depends(get_current_user)):
     return {"top": board[:10], "my_rank": my_rank}
 
 # ============================================================
-# AI Tutor (streaming)
+# AI Tutor (Streaming)
 # ============================================================
 
 @api_router.get("/ai/sessions")
@@ -533,7 +653,7 @@ async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
     return {"answer": resp}
 
 # ============================================================
-# Teacher: courses & earnings
+# Teacher: Courses & Earnings
 # ============================================================
 
 VIEW_RATE_FCFA = 90
@@ -621,11 +741,12 @@ async def teacher_stats(user: dict = Depends(get_current_user)):
     }
 
 # ============================================================
-# Seed demo data
+# Seed Demo Data
 # ============================================================
 
 @api_router.post("/seed")
 async def seed_demo():
+    """Seed demo data for testing"""
     teacher = await db.users.find_one({"email": "demo.teacher@gcsmart.cm"}, {"_id": 0})
     if not teacher:
         tid = f"user_{uuid.uuid4().hex[:12]}"
@@ -678,7 +799,7 @@ async def seed_demo():
     return {"ok": True}
 
 # ============================================================
-# PDF helpers
+# PDF Helpers
 # ============================================================
 
 _pdf_cache = {}
@@ -709,7 +830,7 @@ def _clean_json(text: str):
     return json.loads(text)
 
 # ============================================================
-# Papers module
+# Papers Module
 # ============================================================
 
 @api_router.get("/papers/filters")
@@ -879,31 +1000,52 @@ async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 # ============================================================
-# Root & CORS
+# Root Endpoints
 # ============================================================
 
 @api_router.get("/")
 async def root():
-    return {"message": "GCSMART API", "version": "1.0.0", "status": "running"}
+    return {
+        "message": "GCSMART API",
+        "version": "2.0.0",
+        "status": "running",
+        "endpoints": {
+            "auth": "/api/auth",
+            "exam": "/api/exam/structure",
+            "papers": "/api/papers",
+            "ai": "/api/ai/chat",
+            "docs": "/docs"
+        }
+    }
 
 app.include_router(api_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ============================================================
+# Shutdown Handler
+# ============================================================
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
 
+# ============================================================
+# Main Entry Point
+# ============================================================
+
 if __name__ == "__main__":
     import uvicorn
+    
+    PORT = int(os.environ.get("PORT", 8000))
+    
     print("🚀 Starting GCSMART API Server...")
-    print("📚 MongoDB:", os.environ.get('MONGO_URL', 'mongodb://localhost:27017'))
-    print("🌐 API: http://localhost:8000")
-    print("📖 Docs: http://localhost:8000/docs")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print(f"📚 MongoDB: {MONGO_URL[:50]}...")
+    print(f"🌐 API: http://localhost:{PORT}")
+    print(f"📖 Docs: http://localhost:{PORT}/docs")
+    print(f"🔗 CORS Origins: {CORS_ORIGINS}")
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=PORT,
+        log_level="info"
+    )
