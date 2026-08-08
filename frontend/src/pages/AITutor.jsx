@@ -8,6 +8,7 @@ import { Button } from "../components/ui/button";
 import {
     Bot, Send, Sparkles, Calculator, BookOpen, CalendarClock, ListChecks, Layers, FileText, User,
 } from "lucide-react";
+import Markdown from "../components/Markdown";
 
 const SUBJECTS = ["General", "Mathematics", "Physics", "Chemistry", "Biology", "Economics", "English Language", "French", "Computer Science"];
 const QUICK = [
@@ -112,8 +113,10 @@ export default function AITutor() {
                         <div className={`h-9 w-9 shrink-0 rounded-lg flex items-center justify-center ${m.role === "user" ? "bg-secondary" : "bg-primary text-white"}`}>
                             {m.role === "user" ? <User className="h-4.5 w-4.5" /> : <Bot className="h-4.5 w-4.5" />}
                         </div>
-                        <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm whitespace-pre-wrap leading-relaxed ${m.role === "user" ? "bg-primary text-white" : "bg-secondary/60 border border-border"}`}>
-                            {m.content || <span className="inline-flex gap-1"><span className="animate-pulse">●</span></span>}
+                        <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm leading-relaxed ${m.role === "user" ? "bg-primary text-white whitespace-pre-wrap" : "bg-secondary/60 border border-border"}`}>
+                            {m.role === "user"
+                                ? m.content
+                                : (m.content ? <Markdown>{m.content}</Markdown> : <span className="inline-flex gap-1"><span className="animate-pulse">●</span></span>)}
                         </div>
                     </div>
                 ))}

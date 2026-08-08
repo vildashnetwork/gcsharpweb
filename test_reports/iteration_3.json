@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend-only polish verification for markdown/katex rendering and scroll containers. 3 of 4 targets PASS. Ask-AI answer + QA solutions render clean formatted text with scrollable containers (max-h-[46vh] and max-h-[75vh] with overflow-y-auto confirmed; QA scrollHeight 1769 > clientHeight 808). AI Tutor bubble renders full markdown+KaTeX (16 katex nodes, 8 bold, no raw ** or LaTeX slashes). Regression clean: no React runtime errors, no white screen, katex CSS loads. FAILURE: VideoSolutionPlayer whiteboard lines are NOT rendered through the new Markdown component - the file imports Markdown but line 53 still renders `{line}` as plain text inside <p>. .md-body-invert count = 0 in DOM. The cached Paper 2 board content happens to be free of markdown symbols so no visible artifacts appear today, but any future response containing **bold** / \\[ \\] / \\( \\) / $...$ will render raw exactly like the pre-fix bug. Also, .md-body-invert CSS class is referenced in the request but no element uses it.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "VideoSolutionPlayer.jsx", "issue": "Board lines rendered as raw text via <p>{line}</p> (line 53). Markdown component is imported but never used for board content. Regression against the stated fix - future AI outputs containing markdown/LaTeX will show raw ** and \\[ \\] symbols on the whiteboard. Fix: wrap each line in <Markdown className=\"md-body-invert\">{line}</Markdown> (keep the fade/translate transition on a wrapper div).", "selector": ".bg-[#0A192F] p (scene board lines) / expected .md-body-invert", "priority": "HIGH"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "In /app/frontend/src/components/VideoSolutionPlayer.jsx, replace the plain `{line}` render on line 53 with the Markdown component using the md-body-invert class so whiteboard text renders formatted markdown+math (matches PaperReader/AITutor treatment)."
+  ],
+  "critical_code_review_comments": [
+    "VideoSolutionPlayer imports Markdown but never invokes it - dead import and unfulfilled requirement.",
+    "Markdown.jsx currently forces `md-body` class; to support the md-body-invert variant on the dark whiteboard, either drop the hardcoded prefix or merge with className prop cleanly."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "80% (4/5 review points; video whiteboard Markdown wiring missing)"},
+  "seed_data_creation": "Reused existing student session (user_teststudent01 / test_session_student_01) confirmed in Mongo.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "session_token=test_session_student_01 cookie (see /app/auth_testing.md)",
+  "context_for_next_testing_agent": "Cached fast IDs: Paper1 QA pap_71501c2ba7f8, Paper2 video pap_68b3f5254f5e. Routes are /study/paper/:id (NOT /paper/:id). AI tutor route /ai uses an <input placeholder='Ask GC AI anything...'> and Enter to send. Highlight-to-Ask flow can be triggered by selecting a span in .react-pdf__Page__textContent and dispatching a 'mouseup' event on the scrollable ancestor with class max-h-[75vh]. After fix, re-check .md-body-invert exists inside .bg-[#0A192F] and confirm no raw ** / \\[ / \\( appears when boards contain math.",
+  "rca_of_the_issue": "The polish task added a Markdown wrapper and md-body-invert CSS variant, and wired PaperReader.jsx + AITutor.jsx to use them. VideoSolutionPlayer.jsx was updated to import Markdown but the JSX inside the board map (line 51-55) was never changed - each scene line is still rendered as a raw string inside <p>. This is a plain incomplete implementation, not a plugin/config issue."
+}

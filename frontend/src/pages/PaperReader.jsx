@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -6,6 +6,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import api, { API } from "../lib/api";
 import { Button } from "../components/ui/button";
 import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
+import Markdown from "../components/Markdown";
 import {
     ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Loader2, Sparkles, Bot,
     Bookmark, BookmarkCheck, FileText, Film, ListChecks, X,
@@ -50,6 +51,7 @@ export default function PaperReader() {
     }, [paper]);
 
     const isPaper1 = paper?.paper_number === 1;
+    const pdfFile = useMemo(() => ({ url: `${API}/papers/${paperId}/pdf`, withCredentials: true }), [paperId]);
 
     const handleSelection = useCallback(() => {
         const sel = window.getSelection();
@@ -139,7 +141,7 @@ export default function PaperReader() {
                     </div>
                     <div className="max-h-[75vh] overflow-auto p-4 flex justify-center bg-secondary/20" onMouseUp={handleSelection}>
                         <Document
-                            file={{ url: `${API}/papers/${paperId}/pdf`, withCredentials: true }}
+                            file={pdfFile}
                             onLoadSuccess={({ numPages }) => setNumPages(numPages)}
                             loading={<div className="py-20"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}
                             error={<p className="py-20 text-sm text-muted-foreground">Could not load PDF.</p>}
@@ -184,7 +186,7 @@ export default function PaperReader() {
                             </div>
                             <p className="text-xs text-muted-foreground mb-2 line-clamp-2 italic">"{askText}"</p>
                             {askLoading ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Solving…</div>
-                                : <p className="text-sm whitespace-pre-wrap leading-relaxed">{askAnswer}</p>}
+                                : <div className="max-h-[46vh] overflow-y-auto pr-1"><Markdown>{askAnswer}</Markdown></div>}
                         </div>
                     )}
 
@@ -195,15 +197,15 @@ export default function PaperReader() {
 
                     {/* QA list */}
                     {qa && (
-                        <div className="rounded-xl border border-border bg-card p-5 space-y-4">
-                            <p className="font-display font-semibold flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /> Worked Solutions</p>
+                        <div className="rounded-xl border border-border bg-card p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+                            <p className="font-display font-semibold flex items-center gap-2 sticky top-0 bg-card pb-1"><FileText className="h-4 w-4 text-primary" /> Worked Solutions</p>
                             {qa.map((item, i) => (
                                 <div key={i} className="rounded-lg border border-border bg-secondary/30 p-4">
-                                    <p className="font-medium text-sm mb-2">Q{item.number}. {item.question}</p>
+                                    <div className="font-medium text-sm mb-2 flex gap-1"><span>Q{item.number}.</span><Markdown>{item.question}</Markdown></div>
                                     <ol className="list-decimal list-inside space-y-1 text-sm text-foreground/90">
-                                        {(item.steps || []).map((s, j) => <li key={j}>{s}</li>)}
+                                        {(item.steps || []).map((s, j) => <li key={j} className="[&_.md-body]:inline [&_p]:inline"><Markdown>{s}</Markdown></li>)}
                                     </ol>
-                                    <p className="text-sm mt-2 font-semibold text-success">Answer: {item.answer}</p>
+                                    <div className="text-sm mt-2 font-semibold text-success flex gap-1 [&_.md-body]:inline [&_p]:inline"><span>Answer:</span><Markdown>{item.answer}</Markdown></div>
                                 </div>
                             ))}
                         </div>

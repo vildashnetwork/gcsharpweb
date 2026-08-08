@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Play, Pause, SkipBack, SkipForward, RotateCcw, Volume2, Radio } from "lucide-react";
+import Markdown from "./Markdown";
 
 export default function VideoSolutionPlayer({ scenes, title, question }) {
     const [idx, setIdx] = useState(0);
