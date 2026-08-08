@@ -1,0 +1,104 @@
+{
+  "theme": "hybrid_fullstack",
+  "primary_concept": "Premium Educational Ecosystem (GCSMART)",
+  "typography": {
+    "headings": "Outfit",
+    "body": "Inter",
+    "weights": {
+      "headings": [500, 600, 700],
+      "body": [400, 500, 600]
+    },
+    "guidelines": "Do not use Inter for headings. Use Outfit with tight tracking (tracking-tight) for large headers to establish a premium SaaS aesthetic. Use Inter strictly for data tables, side panels, and body text for extreme legibility."
+  },
+  "colors": {
+    "dark": {
+      "background": "#0A192F",
+      "surface": "#1E293B",
+      "surface_glass": "rgba(30, 41, 59, 0.7)",
+      "border": "#334155",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8"
+    },
+    "light": {
+      "background": "#F4F7FC",
+      "surface": "#FFFFFF",
+      "surface_glass": "rgba(255, 255, 255, 0.7)",
+      "border": "#E2E8F0",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569"
+    },
+    "brand": {
+      "primary": "#2563EB",
+      "accent": "#3B82F6",
+      "success": "#22C55E",
+      "error": "#EF4444",
+      "warning": "#F59E0B"
+    }
+  },
+  "layouts": {
+    "dashboard_grid": "Bento Grid Protocol (Mode B). High-density, high-scannability. Use grid-cols-1 md:grid-cols-3 lg:grid-cols-4 with gap-6. Make main charts (Grade Trends, Study Consistency) span 2 or 3 columns.",
+    "sidebar": "Left fixed sidebar, min-w-[260px], border-r (light: border-slate-200, dark: border-slate-800). Must contain Logo (graduation cap), Nav Items (Dashboard, Study Center, AI Assistant, Analytics, Teacher Portal, Settings), 'Upload Content' button, Help Center & Logout at bottom.",
+    "pdf_ai_split": "Use a robust CSS grid split-pane layout (60% PDF viewer / Video Player, 40% AI Assistant panel). The AI panel must utilize glassmorphism to look floating/integrated.",
+    "spacing": "Generous Spacing Philosophy: use p-6 to p-8 inside cards to prevent text collision and maintain breathing room."
+  },
+  "surfaces": {
+    "cards": "Subtle border + flat background. Dark mode: border-[#334155] bg-[#1E293B]. Light mode: border-[#E2E8F0] bg-white. Radius: rounded-xl.",
+    "glassmorphism": "For AI Tutor panels, sticky headers, and modals: use high-quality optical glass. Light mode: backdrop-blur-xl bg-white/70 border-white/40. Dark mode: backdrop-blur-xl bg-[#0A192F]/80 border-slate-700/50. NO pure transparent backgrounds.",
+    "shadows": "Light mode: shadow-sm for structural cards, shadow-xl for floating dropdowns/modals. Dark mode: rely heavily on 1px inner borders and localized radial glows instead of large drop shadows."
+  },
+  "motion": {
+    "hover_states": "-translate-y-0.5 with subtle shadow elevation. Interactive cards must transition smoothly. Buttons use scale-95 on active. All interactive elements must have transition-colors and transition-transform.",
+    "page_transitions": "Utilize framer-motion fade + slight slide-up (y: 10 to y: 0) for dashboard widgets with staggered entrances."
+  },
+  "components": {
+    "buttons": "Rounded-lg. Primary button: bg-blue-600 hover:bg-blue-700 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] (glow effect).",
+    "charts": "Use Recharts (BarCharts for Consistency, LineCharts for Trends). Ensure axis text and tooltips adapt perfectly to the surface_glass aesthetics in both light and dark modes.",
+    "ai_chat": "Chat bubbles: AI = surface color with subtle brand border, User = primary brand color. Quick action chips below input (solve math, explain concept, study plan).",
+    "gamification": "Level progress rings using circular SVG strokes. Badges with rich colors and drop-shadows."
+  },
+  "accessibility": {
+    "contrast": "Ensure text meets APCA standards. All non-text interactive elements need clear focus rings (focus:ring-2 focus:ring-blue-500 focus:outline-none).",
+    "testing_ids": "All interactive and key informational elements MUST include data-testid attributes (e.g., data-testid='sidebar-nav-dashboard', data-testid='ai-tutor-submit')."
+  },
+  "visual_enhancers": {
+    "gradients": "Avoid generic full-page gradients. Use localized radial glows (e.g., a faint blue/green radial gradient behind the Gamification badge or XP stats) to create depth."
+  },
+  "image_urls": {
+    "student_studying": {
+      "url": "https://images.unsplash.com/photo-1515378960530-7c0da6231fb1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1Nzh8MHwxfHNlYXJjaHwxfHxzdHVkZW50JTIwc3R1ZHlpbmclMjBsYXB0b3B8ZW58MHx8fHwxNzg2MTY5ODc3fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Student at laptop, ideal for hero sections, 'Continue Learning' banners, or onboarding screens."
+    },
+    "teacher_avatar": {
+      "url": "https://images.unsplash.com/photo-1573497019940-1c28c88b4f3e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njd8MHwxfHNlYXJjaHwyfHx0ZWFjaGVyJTIwcG9ydHJhaXR8ZW58MHx8fHwxNzg2MTY5ODg4fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Smiling female teacher portrait, for use in the Teacher Portal or instructor profiles."
+    },
+    "math_abstract": {
+      "url": "https://images.unsplash.com/photo-1655704705321-3ac52dc67f70?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzB8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG1hdGglMjBnZW9tZXRyeXxlbnwwfHx8fDE3ODYxNjk4ODh8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract math geometry, useful as a fallback course cover or subject banner (especially for Math/Physics)."
+    },
+    "graduation_cap": {
+      "url": "https://images.unsplash.com/photo-1559443065-31b290d9c9c1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NzV8MHwxfHNlYXJjaHwzfHxncmFkdWF0aW9uJTIwY2FwJTIwaXNvbGF0ZWR8ZW58MHx8fHwxNzg2MTY5ODgzfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Graduation cap image for Gamification modules, level-up modals, or achievement milestone cards."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Build the dashboard using React, Tailwind CSS, and Shadcn UI primitives.",
+    "Implement a robust layout with a collapsible sidebar and a top sticky header containing the Light/Dark mode toggle.",
+    "Ensure seamless toggling between Light and Dark mode using Tailwind's 'dark:' variant class strategy.",
+    "Do NOT use raw HTML input date or select. Use Shadcn Popover/Calendar and Select components.",
+    "Use Recharts for rendering Performance Analytics (grade trends, focus areas, study hours).",
+    "For the PDF Reader/AI Split view and Video Player, ensure the AI Tutor panel uses premium glassmorphism effects alongside the content viewer.",
+    "Inject the E1 spacing philosophy: generous paddings (p-6 to p-8) inside dashboard cards.",
+    "Ensure 'Inter' is imported for body/ui text, and 'Outfit' is imported for headings via Google Fonts or standard imports."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not converge toward generic outputs. Create depth through layered z-index hierarchy and glassmorphism.",
+    "Never apply `transition: all`. Target specific properties like `transition-colors` or `transition-transform` to prevent layout breaks.",
+    "Never center align the main `.App` container. Maintain natural left-aligned reading flow.",
+    "Always use modern button styles with interaction animations and explicit active/focus states.",
+    "Never use generic AI emojis for icons. Use `lucide-react` exclusively for a professional SaaS look.",
+    "Every interaction needs micro-animations (hover states, focus rings). Static = dead.",
+    "Provide `data-testid` on all interactive UI components for testing.",
+    "All headers/overlays must use blur filters or solid backgrounds; never leave them completely transparent if content scrolls beneath."
+  ]
+}
