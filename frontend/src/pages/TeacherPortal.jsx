@@ -197,9 +197,6 @@
 
 
 
-
-
-
 // frontend/src/pages/TeacherPortal.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import api from "../lib/api";
