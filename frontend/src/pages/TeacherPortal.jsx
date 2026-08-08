@@ -200,8 +200,6 @@
 
 
 
-
-
 // frontend/src/pages/TeacherPortal.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import api from "../lib/api";
@@ -388,6 +386,7 @@ function UploadDropzone({
         }
     };
 
+    // ✅ FIXED: Added handleFile to dependency array
     const handleDrop = useCallback((e) => {
         e.preventDefault();
         setIsDragging(false);
@@ -395,7 +394,7 @@ function UploadDropzone({
         if (files.length > 0) {
             handleFile(files[0]);
         }
-    }, []);
+    }, [handleFile]);
 
     const handleDragOver = useCallback((e) => {
         e.preventDefault();
@@ -569,7 +568,7 @@ export default function TeacherPortal() {
     const [courses, setCourses] = useState([]);
     const [open, setOpen] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [useFileUpload, setUseFileUpload] = useState(true); // true = file upload, false = link input
+    const [useFileUpload, setUseFileUpload] = useState(true);
     const [form, setForm] = useState({
         title: "",
         description: "",
@@ -644,7 +643,6 @@ export default function TeacherPortal() {
 
     const toggleUploadMethod = () => {
         setUseFileUpload(!useFileUpload);
-        // Clear video URL when switching methods to avoid confusion
         setFormField("video_url", "");
         setFormField("video_public_id", "");
     };
@@ -668,7 +666,7 @@ export default function TeacherPortal() {
                                 <Upload className="h-5 w-5" /> Publish a Lesson Video
                             </DialogTitle>
                             <DialogDescription>
-                                Upload your video  or paste a video link. Earn 90 FCFA per qualified view.
+                                Upload your video or paste a video link. Earn 90 FCFA per qualified view.
                             </DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4 py-2">
@@ -717,7 +715,7 @@ export default function TeacherPortal() {
                                     <ToggleSwitch
                                         enabled={useFileUpload}
                                         onToggle={toggleUploadMethod}
-                                        label={useFileUpload ? "Click Insert A Link" : "Click Here To Upload A Video"}
+                                        label={useFileUpload ? "Click To Insert A Link" : "Click Here To Upload A Video"}
                                         icon={useFileUpload ? FileVideo : LinkIcon}
                                     />
                                 </div>
@@ -760,7 +758,6 @@ export default function TeacherPortal() {
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
                                     <Wifi className="h-3 w-3" />
                                     {useFileUpload ? 'Please Upload a Video File' : 'Paste any video URL (YouTube, Vimeo, etc.)'}
-
                                 </div>
                             </div>
 
