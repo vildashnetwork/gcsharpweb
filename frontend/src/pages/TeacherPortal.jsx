@@ -197,6 +197,48 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // frontend/src/pages/TeacherPortal.jsx
 import { useEffect, useState, useCallback, useRef } from "react";
 import api from "../lib/api";
@@ -281,7 +323,7 @@ function UploadDropzone({
     const speedIntervalRef = useRef(null);
     const fileInputRef = useRef(null);
 
-    const uploadToCloudinary = async (file) => {
+    const uploadToCloudinary = useCallback(async (file) => {
         const formData = new FormData();
         formData.append('file', file);
         formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
@@ -339,9 +381,9 @@ function UploadDropzone({
             xhr.open('POST', `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/${resourceType}/upload`);
             xhr.send(formData);
         });
-    };
+    }, [fileType]);
 
-    const handleFile = async (file) => {
+    const handleFile = useCallback(async (file) => {
         if (file.size > maxSize) {
             setError(`File too large. Maximum size: ${formatFileSize(maxSize)}`);
             toast.error(`File too large. Maximum size: ${formatFileSize(maxSize)}`);
@@ -381,9 +423,8 @@ function UploadDropzone({
                 clearInterval(speedIntervalRef.current);
             }
         }
-    };
+    }, [maxSize, accept, uploadToCloudinary, fileType, onUpload]);
 
-    // ✅ FIXED: Added handleFile to dependency array
     const handleDrop = useCallback((e) => {
         e.preventDefault();
         setIsDragging(false);
@@ -403,15 +444,15 @@ function UploadDropzone({
         setIsDragging(false);
     }, []);
 
-    const handleFileInput = (e) => {
+    const handleFileInput = useCallback((e) => {
         const files = e.target.files;
         if (files.length > 0) {
             handleFile(files[0]);
         }
         e.target.value = '';
-    };
+    }, [handleFile]);
 
-    const handleRemove = () => {
+    const handleRemove = useCallback(() => {
         if (onRemove) onRemove();
         setFileName('');
         setFileSize(0);
@@ -423,7 +464,7 @@ function UploadDropzone({
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
-    };
+    }, [onRemove, fileInputRef]);
 
     useEffect(() => {
         if (uploading) {
@@ -577,35 +618,38 @@ export default function TeacherPortal() {
         thumbnail_public_id: "",
     });
 
-    const load = () => {
+    const load = useCallback(() => {
         api.get("/teacher/stats").then((r) => setStats(r.data)).catch(() => { });
         api.get("/courses", { params: { mine: true } }).then((r) => setCourses(r.data)).catch(() => { });
-    };
-    useEffect(load, []);
+    }, []);
 
-    const setFormField = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+    useEffect(() => {
+        load();
+    }, [load]);
 
-    const handleVideoUpload = (url, publicId) => {
+    const setFormField = useCallback((k, v) => setForm((f) => ({ ...f, [k]: v })), []);
+
+    const handleVideoUpload = useCallback((url, publicId) => {
         setFormField("video_url", url);
         setFormField("video_public_id", publicId);
-    };
+    }, [setFormField]);
 
-    const handleThumbnailUpload = (url, publicId) => {
+    const handleThumbnailUpload = useCallback((url, publicId) => {
         setFormField("thumbnail", url);
         setFormField("thumbnail_public_id", publicId);
-    };
+    }, [setFormField]);
 
-    const handleRemoveVideo = () => {
+    const handleRemoveVideo = useCallback(() => {
         setFormField("video_url", "");
         setFormField("video_public_id", "");
-    };
+    }, [setFormField]);
 
-    const handleRemoveThumbnail = () => {
+    const handleRemoveThumbnail = useCallback(() => {
         setFormField("thumbnail", "");
         setFormField("thumbnail_public_id", "");
-    };
+    }, [setFormField]);
 
-    const createCourse = async () => {
+    const createCourse = useCallback(async () => {
         if (!form.title || !form.subject || !form.level || !form.video_url) {
             toast.error("Fill title, subject, level and video URL");
             return;
@@ -636,13 +680,13 @@ export default function TeacherPortal() {
         } finally {
             setSaving(false);
         }
-    };
+    }, [form, load]);
 
-    const toggleUploadMethod = () => {
-        setUseFileUpload(!useFileUpload);
+    const toggleUploadMethod = useCallback(() => {
+        setUseFileUpload((prev) => !prev);
         setFormField("video_url", "");
         setFormField("video_public_id", "");
-    };
+    }, [setFormField]);
 
     return (
         <div className="space-y-6 max-w-[1400px]">
