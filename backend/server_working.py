@@ -1,14 +1,13 @@
 # server_working.py - GCSMART Backend API (Production Ready)
 import os
 import io
+import re
 import json
 import uuid
-import base64
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
-import asyncio
 
 import httpx
 from pypdf import PdfReader
@@ -17,7 +16,7 @@ from fastapi.responses import StreamingResponse, Response as FastResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # ============================================================
 # Configuration & Environment
@@ -27,7 +26,9 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB Connection
-MONGO_URL = os.environ.get('MONGO_URL', 'mongodb+srv://gcsharp-user:HMLfa8jjFgvhmOut@gcsharp.nh4zzwi.mongodb.net/?retryWrites=true&w=majority')
+MONGO_URL = os.environ.get('MONGO_URL')
+if not MONGO_URL:
+    raise RuntimeError("MONGO_URL environment variable is not set")
 DB_NAME = os.environ.get('DB_NAME', 'gcsmart')
 CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
 APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
@@ -43,7 +44,7 @@ db = client[DB_NAME]
 
 app = FastAPI(
     title="GCSMART API",
-    version="2.0.0",
+    version="2.1.0",
     description="AI-Powered Educational Platform for Cameroon Students",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -67,124 +68,193 @@ app.add_middleware(
 )
 
 # ============================================================
-# Simple LLM Client (OpenRouter SDK Compatible)
+# LLM Client (OpenRouter, with a resilient model fallback chain)
 # ============================================================
+#
+# WHY THIS CHANGED:
+# The previous version fell back to Hugging Face's free inference API when
+# OpenRouter failed. On Render that call fails with:
+#   [Errno -5] No address associated with hostname
+# This is a DNS resolution failure for api-inference.huggingface.co, which
+# is common in Render's free-tier network environment (and the HF free
+# inference API is unreliable for arbitrary models regardless). Rather than
+# fight Render's DNS/network config, we remove that dependency entirely and
+# make OpenRouter itself resilient by trying several models in order before
+# giving up. This also fixes the "OpenRouter API error: 404" case, since a
+# 404 (model not found / not currently free) just moves to the next model
+# instead of failing the whole request.
+
+DEFAULT_MODEL_CHAIN = [
+    "google/gemini-2.5-flash:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+]
+
+
+def _get_model_chain() -> List[str]:
+    """Build the ordered list of models to try. Primary model (from env)
+    is tried first, followed by any configured fallbacks, de-duplicated."""
+    primary = os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0])
+    extra_raw = os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
+    extra = [m.strip() for m in extra_raw.split(",") if m.strip()]
+    chain = [primary] + extra + DEFAULT_MODEL_CHAIN
+    seen = set()
+    ordered = []
+    for m in chain:
+        if m not in seen:
+            seen.add(m)
+            ordered.append(m)
+    return ordered
+
 
 class SimpleLLM:
-    """Simple LLM client using OpenRouter API with Hugging Face fallback"""
-    
-    def __init__(self, api_key: str = "", model: str = "google/gemini-2.5-flash:free"):
+    """LLM client using OpenRouter, trying multiple free models in order
+    before giving up. No external fallback provider (see note above)."""
+
+    def __init__(self, api_key: str = "", models: Optional[List[str]] = None):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self.model = model
+        self.models = models or _get_model_chain()
         self.base_url = "https://openrouter.ai/api/v1"
         self.system_message = ""
         self.session_id = None
         self.referer = os.environ.get("APP_URL", "https://gcsharpweb.onrender.com")
         self.title = os.environ.get("APP_NAME", "GCSMART AI")
-    
-    def with_model(self, provider: str, model: str):
-        self.model = f"{provider}/{model}" if provider else model
-        return self
-    
+
+    async def _call_model(self, hc: httpx.AsyncClient, model: str, message: str) -> Optional[str]:
+        """Try a single model. Returns the text on success, None on failure
+        (caller moves on to the next model in the chain)."""
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": self.system_message},
+                {"role": "user", "content": message},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 1000,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": self.referer,
+            "X-Title": self.title,
+        }
+        try:
+            response = await hc.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+        except httpx.RequestError as e:
+            logger.warning(f"OpenRouter request error for model {model}: {e}")
+            return None
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                content = data["choices"][0]["message"]["content"]
+                if content and content.strip():
+                    return content
+                logger.warning(f"OpenRouter model {model} returned empty content")
+                return None
+            except (KeyError, IndexError, ValueError) as e:
+                logger.warning(f"OpenRouter model {model} returned unparseable response: {e}")
+                return None
+
+        # Non-200: log and let the caller try the next model
+        detail = ""
+        try:
+            error_data = response.json()
+            detail = error_data.get("error", {}).get("message", "")
+        except Exception:
+            pass
+        logger.warning(f"OpenRouter model {model} failed: {response.status_code} {detail}")
+        return None
+
     async def send_message(self, message: str) -> str:
-        """Send message to OpenRouter API"""
-        try:
-            if not self.api_key:
-                return "Error: OpenRouter API key not configured. Please set OPENROUTER_API_KEY in .env"
-            
-            # Build request payload as per OpenRouter docs
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": self.system_message},
-                    {"role": "user", "content": message}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 1000,
-            }
-            
-            # Headers as per OpenRouter documentation
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": self.referer,  # Required for rankings
-                "X-OpenRouter-Title": self.title,  # Required for rankings
-            }
-            
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["choices"][0]["message"]["content"]
-                else:
-                    error_msg = f"OpenRouter API error: {response.status_code}"
-                    try:
-                        error_data = response.json()
-                        if "error" in error_data:
-                            error_msg += f" - {error_data['error'].get('message', '')}"
-                    except:
-                        pass
-                    logger.error(error_msg)
-                    return await self._call_huggingface(message)
-                    
-        except Exception as e:
-            logger.error(f"LLM error: {e}")
-            return await self._call_huggingface(message)
-    
-    async def _call_huggingface(self, message: str) -> str:
-        """Fallback to Hugging Face Inference API (free)"""
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api-inference.huggingface.co/models/microsoft/phi-2",
-                    json={
-                        "inputs": message,
-                        "parameters": {"max_new_tokens": 500}
-                    }
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    if isinstance(data, list) and len(data) > 0:
-                        return data[0].get("generated_text", str(data))
-                return "AI service temporarily unavailable. Please try again."
-        except Exception as e:
-            logger.error(f"Hugging Face error: {e}")
-            return f"I apologize, but I'm currently unable to generate a response. Error: {str(e)}"
+        """Try each model in self.models in order. Returns the first
+        successful response, or a friendly fallback message if all fail."""
+        if not self.api_key:
+            logger.error("OPENROUTER_API_KEY is not configured")
+            return self._friendly_failure_message()
+
+        async with httpx.AsyncClient(timeout=30.0) as hc:
+            for model in self.models:
+                result = await self._call_model(hc, model, message)
+                if result is not None:
+                    return result
+
+        logger.error(f"All models in fallback chain failed: {self.models}")
+        return self._friendly_failure_message()
+
+    @staticmethod
+    def _friendly_failure_message() -> str:
+        return (
+            "I'm having trouble reaching the AI service right now. "
+            "This is usually temporary — please try again in a moment. "
+            "In the meantime, you can browse past papers or check your dashboard."
+        )
+
 
 # ============================================================
-# Local Math Solver (Fallback)
+# Local Math Solver (first line of defense, no API call needed)
 # ============================================================
 
 def solve_math_local(question: str) -> Optional[str]:
-    """Solve math problems locally using SymPy"""
+    """Solve straightforward math problems locally using SymPy, without
+    calling the AI at all. Returns None if the question doesn't look like
+    something this solver can confidently handle, so callers can fall
+    through to the AI."""
     try:
         import sympy as sp
-        import re
-        
-        # Extract expression
-        expr_str = re.sub(r'(solve|find|simplify|integrate|differentiate|for|the|of)', '', question.lower())
-        math_expr = re.findall(r'[0-9xya-z+\-*/^=().]', expr_str)
-        expr_str = ''.join(math_expr).strip()
-        
-        if not expr_str:
+        from sympy.parsing.sympy_parser import (
+            parse_expr, standard_transformations, implicit_multiplication_application,
+        )
+
+        q = question.lower().strip()
+
+        # Only attempt local solving if the question looks mathematical.
+        # This avoids mangling ordinary text questions (e.g. "explain force")
+        # into nonsense expressions.
+        math_signal = re.search(r'[0-9]', q) and re.search(r'[+\-*/=^]|sqrt|solve|simplify|factor|derivative|integrate', q)
+        if not math_signal:
             return None
-            
+
+        transformations = standard_transformations + (implicit_multiplication_application,)
+
+        wants_factor = bool(re.search(r'\bfactor(ise)?\b', q))
+
+        # Strip instructional words, keep math-relevant characters
+        cleaned = re.sub(r'\b(solve|find|simplify|integrate|differentiate|factor(ise)?|for|the|of|value|calculate|what\s+is)\b', ' ', q)
+        allowed = re.findall(r'[0-9a-z+\-*/^=().,\s]', cleaned)
+        expr_str = ''.join(allowed).strip()
+        expr_str = re.sub(r'\s+', ' ', expr_str).strip()
+        expr_str = expr_str.replace('^', '**')  # sympy's parser treats ^ as XOR, not power
+
+        if not expr_str or not re.search(r'[0-9]', expr_str):
+            return None
+
         if '=' in expr_str:
-            left, right = expr_str.split('=')
-            expr = sp.parse_expr(f"{left} - ({right})")
-            solutions = sp.solve(expr)
+            parts = expr_str.split('=')
+            if len(parts) != 2:
+                return None
+            left, right = parts
+            expr = parse_expr(f"({left}) - ({right})", transformations=transformations)
+            free_syms = list(expr.free_symbols)
+            if not free_syms:
+                return None
+            solutions = sp.solve(expr, free_syms[0] if len(free_syms) == 1 else free_syms)
             if solutions:
                 return f"Solutions: {', '.join(str(s) for s in solutions)}"
+            return None
+        elif wants_factor:
+            expr = parse_expr(expr_str, transformations=transformations)
+            factored = sp.factor(expr)
+            if str(factored) == str(expr):
+                return None
+            return str(factored)
         else:
-            expr = sp.parse_expr(expr_str)
-            return str(sp.simplify(expr))
+            expr = parse_expr(expr_str, transformations=transformations)
+            simplified = sp.simplify(expr)
+            return str(simplified)
     except Exception as e:
-        logger.error(f"Local math solver error: {e}")
+        logger.debug(f"Local math solver could not handle question: {e}")
         return None
 
 # ============================================================
@@ -262,10 +332,9 @@ class SolveRequest(BaseModel):
 # Auth Helpers
 # ============================================================
 
-def _new_chat(session_id: str, system: str):
+def _new_chat(session_id: str, system: str) -> SimpleLLM:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    model = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash:free")
-    chat = SimpleLLM(api_key=api_key, model=model)
+    chat = SimpleLLM(api_key=api_key)
     chat.system_message = system
     chat.session_id = session_id
     return chat
@@ -307,13 +376,13 @@ async def register_user(req: RegisterRequest):
     existing = await db.users.find_one({"email": req.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     user = {
         "user_id": user_id,
         "email": req.email,
         "name": req.name,
-        "password": req.password,  # In production, hash this!
+        "password": req.password,  # TODO: hash with bcrypt/passlib before production launch
         "role": "student",
         "onboarded": False,
         "bio": "",
@@ -341,11 +410,10 @@ async def login_user(req: LoginRequest, response: Response):
     user = await db.users.find_one({"email": req.email}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
-    # In production, use proper password hashing!
+
     if user.get("password") != req.password:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     session_token = f"tok_{uuid.uuid4().hex}"
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
@@ -354,7 +422,7 @@ async def login_user(req: LoginRequest, response: Response):
         "expires_at": expires_at.isoformat(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    
+
     response.set_cookie(
         key="session_token", value=session_token,
         httponly=True, secure=True, samesite="none", path="/",
@@ -471,8 +539,7 @@ async def exam_structure():
 
 @api_router.post("/solve")
 async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current_user)):
-    """Solve math problems using local SymPy or AI"""
-    # Try local solver first
+    """Solve math problems: local SymPy first, then AI (with model fallback chain)."""
     local_result = solve_math_local(req.question)
     if local_result:
         return {
@@ -483,8 +550,7 @@ async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current
             "question": req.question,
             "subject": req.subject or "Mathematics"
         }
-    
-    # Fall back to AI
+
     try:
         system = "You are a math expert. Solve the problem step by step. Return the final answer clearly."
         chat = _new_chat(f"solve_{uuid.uuid4().hex[:12]}", system)
@@ -498,10 +564,10 @@ async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current
             "subject": req.subject or "General"
         }
     except Exception as e:
-        logger.error(f"AI solve error: {e}")
+        logger.error(f"Solve endpoint error: {e}")
         return {
             "success": False,
-            "error": str(e),
+            "answer": "I couldn't work through that problem right now. Try rephrasing it with clearer math notation, or try again shortly.",
             "suggestion": "Try rephrasing your question or use specific math notation"
         }
 
@@ -531,18 +597,14 @@ async def generate_questions(req: GenerateQuestionsRequest, user: dict = Depends
     )
     chat = _new_chat(f"gen_{uuid.uuid4().hex}", system)
     resp = await chat.send_message(prompt)
-    text = resp.strip()
-    if text.startswith("```"):
-        text = text.split("```", 2)[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
     try:
-        data = json.loads(text)
+        data = _clean_json(resp)
         questions = data.get("questions", data if isinstance(data, list) else [])
+        if not questions:
+            raise ValueError("empty questions list")
     except Exception:
-        logger.error(f"Failed to parse AI questions: {text[:200]}")
-        raise HTTPException(status_code=502, detail="AI failed to generate questions")
+        logger.error(f"Failed to parse AI questions: {resp[:200]}")
+        raise HTTPException(status_code=502, detail="Couldn't generate questions right now. Please try again shortly.")
 
     for i, q in enumerate(questions):
         q["id"] = q.get("id") or f"q{i+1}"
@@ -711,29 +773,26 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
     async def event_gen():
         full = ""
         try:
-            # Build context from conversation history
             context_prefix = ""
             if history:
                 recent = history[-6:]
                 context_prefix = "Conversation so far:\n" + "\n".join(
                     f"{m['role'].upper()}: {m['content']}" for m in recent
                 ) + "\n\nNow answer the new question.\n\n"
-            
-            # Get AI response
+
             response = await chat.send_message(context_prefix + req.message)
             full = response
-            
-            # Stream response in chunks
+
             for chunk in [response[i:i+50] for i in range(0, len(response), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
-                
+
         except Exception as e:
             logger.error(f"AI stream error: {e}")
-            # Send error message to frontend
             error_msg = "I'm having trouble connecting to my AI service. Please try again in a moment."
+            full = error_msg
             for chunk in [error_msg[i:i+50] for i in range(0, len(error_msg), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
-        
+
         # Persist conversation
         new_messages = history + [
             {"role": "user", "content": req.message, "ts": datetime.now(timezone.utc).isoformat()},
@@ -746,7 +805,7 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
 
     return StreamingResponse(
-        event_gen(), 
+        event_gen(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -757,13 +816,11 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
-    """Explain a concept using AI"""
-    # Try local math solver first
+    """Explain a concept using AI (local math solver first)."""
     local_result = solve_math_local(req.message)
     if local_result:
         return {"answer": local_result, "source": "local_solver"}
-    
-    # Fall back to AI
+
     system = "You are GC AI, an expert exam tutor. Give a concise, clear step-by-step explanation."
     chat = _new_chat(f"explain_{uuid.uuid4().hex}", system)
     try:
@@ -772,9 +829,8 @@ async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"AI explain error: {e}")
         return {
-            "answer": "I'm having trouble connecting to my AI service. Please try again later.",
+            "answer": "I'm having trouble connecting to my AI service. Please try again in a moment.",
             "source": "error",
-            "error": str(e)
         }
 
 # ============================================================
@@ -975,7 +1031,7 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     if subject: query["subject"] = subject
     if year: query["year"] = year
     if paper: query["paper_number"] = paper
-    if q: query["title"] = {"$regex": q, "$options": "i"}
+    if q: query["title"] = {"$regex": re.escape(q), "$options": "i"}
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
     drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
     saved = {d["paper_id"] for d in drafts}
@@ -1029,9 +1085,11 @@ async def generate_paper_qa(paper_id: str, user: dict = Depends(get_current_user
     try:
         parsed = _clean_json(resp)
         items = parsed.get("items", [])
+        if not items:
+            raise ValueError("empty items")
     except Exception:
         logger.error(f"QA parse fail: {resp[:200]}")
-        raise HTTPException(status_code=502, detail="AI could not solve this paper")
+        raise HTTPException(status_code=502, detail="Couldn't generate a solution for this paper right now. Please try again shortly.")
     await db.paper_qa_cache.insert_one({"paper_id": paper_id, "items": items,
                                         "created_at": datetime.now(timezone.utc).isoformat()})
     return {"items": items, "cached": False}
@@ -1062,9 +1120,11 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     try:
         parsed = _clean_json(resp)
         raw_scenes = parsed.get("scenes", [])
+        if not raw_scenes:
+            raise ValueError("empty scenes")
     except Exception:
         logger.error(f"Video parse fail: {resp[:200]}")
-        raise HTTPException(status_code=502, detail="AI could not build a video solution")
+        raise HTTPException(status_code=502, detail="Couldn't build a video solution right now. Please try again shortly.")
 
     scenes = []
     for i, sc in enumerate(raw_scenes[:6]):
@@ -1132,7 +1192,7 @@ async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
 async def root():
     return {
         "message": "GCSMART API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
         "endpoints": {
             "auth": "/api/auth",
@@ -1160,19 +1220,19 @@ async def shutdown_db_client():
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     PORT = int(os.environ.get("PORT", 8000))
-    
-    print("🚀 Starting GCSMART API Server...")
-    print(f"📚 MongoDB: {MONGO_URL[:50]}...")
-    print(f"🌐 API: {APP_URL}")
-    print(f"📖 Docs: {APP_URL}/docs")
-    print(f"🔗 CORS Origins: {CORS_ORIGINS}")
-    print(f"🤖 AI Model: {os.environ.get('OPENROUTER_MODEL', 'google/gemini-2.5-flash:free')}")
-    
+
+    print("Starting GCSMART API Server...")
+    print(f"MongoDB: {MONGO_URL[:30]}...")
+    print(f"API: {APP_URL}")
+    print(f"Docs: {APP_URL}/docs")
+    print(f"CORS Origins: {CORS_ORIGINS}")
+    print(f"AI Model chain: {_get_model_chain()}")
+
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
+        app,
+        host="0.0.0.0",
         port=PORT,
         log_level="info"
     )
