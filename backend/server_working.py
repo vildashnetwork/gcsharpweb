@@ -595,7 +595,7 @@ async def generate_questions(req: GenerateQuestionsRequest, user: dict = Depends
 
     system = (
         "You are an expert Cameroon GCE/HND examiner creating authentic multiple-choice exam questions. "
-        "Always return STRICT valid JSON only, no markdown, no commentary."
+        "Always return STRICT valid JSON only, no markdown, no commentary, no reasoning or thinking text before or after the JSON."
     )
     prompt = (
         f"Create {req.count} exam-standard multiple-choice questions for {req.level} "
@@ -1087,13 +1087,51 @@ def extract_pdf_text(data: bytes, max_chars: int = 9000) -> str:
     return "\n".join(parts)[:max_chars]
 
 def _clean_json(text: str):
+    """Extract a JSON object from an LLM response, robust to:
+      - markdown code fences (```json ... ```)
+      - reasoning/thinking preambles some models add before the actual
+        answer (e.g. "Okay, the user wants me to..." followed by the JSON) —
+        this became necessary once the free-tier model chain started
+        including reasoning models, which don't reliably respect
+        "return ONLY JSON" instructions.
+      - trailing commentary after the JSON object
+    Raises ValueError if no valid JSON object can be found anywhere in text.
+    """
     text = text.strip()
-    if text.startswith("```"):
-        text = text.split("```", 2)[1]
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
-    return json.loads(text)
+
+    # 1) Try a direct parse first (the common, well-behaved case)
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2) Look for a fenced code block anywhere in the text, not just at the start
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 3) Brace-matching: find the first '{' and its balanced closing '}',
+    # ignoring any reasoning text before or after it.
+    start = text.find('{')
+    if start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        return json.loads(candidate)
+                    except (json.JSONDecodeError, ValueError):
+                        break
+
+    raise ValueError("Could not extract valid JSON from AI response")
 
 # ============================================================
 # Papers Module
@@ -1157,7 +1195,7 @@ async def generate_paper_qa(paper_id: str, user: dict = Depends(get_current_user
     data = await fetch_pdf_bytes(p["pdf_url"])
     text = extract_pdf_text(data)
     system = ("You are a senior Cameroon GCE examiner. Read the exam paper text and produce a clear, "
-              "step-by-step worked solution section. Return STRICT JSON only.")
+              "step-by-step worked solution section. Return STRICT JSON only, with no reasoning or thinking text before or after it.")
     prompt = (
         f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
         f"PAPER TEXT:\n{text}\n\n"
@@ -1191,7 +1229,7 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     data = await fetch_pdf_bytes(p["pdf_url"])
     text = extract_pdf_text(data, max_chars=7000)
     system = ("You are a master teacher creating a narrated video lesson that solves an exam question "
-              "step by step on a virtual whiteboard. Return STRICT JSON only.")
+              "step by step on a virtual whiteboard. Return STRICT JSON only, with no reasoning or thinking text before or after it.")
     prompt = (
         f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
         f"PAPER TEXT:\n{text}\n\n"
