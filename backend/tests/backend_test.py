@@ -208,6 +208,127 @@ class TestAI:
             assert done, "Stream never marked done"
 
 
+# Papers / Drafts (GCSHARP feature) ---------------------------------------
+class TestPapers:
+    def test_filters_endpoint(self, student):
+        r = student.get(f"{BASE_URL}/api/papers/filters")
+        assert r.status_code == 200
+        d = r.json()
+        assert "levels" in d and "subjects" in d and "years" in d
+        assert d["papers"] == [1, 2, 3]
+        assert len(d["levels"]) >= 1
+
+    def test_list_papers_seeded(self, student):
+        # Ensure seed populated at least once
+        student.post(f"{BASE_URL}/api/seed")
+        r = student.get(f"{BASE_URL}/api/papers")
+        assert r.status_code == 200
+        papers = r.json()
+        assert len(papers) >= 10
+        p0 = papers[0]
+        for k in ("paper_id", "title", "subject", "level", "year", "paper_number", "pdf_url"):
+            assert k in p0
+        # Must contain the cached paper IDs
+        ids = {p["paper_id"] for p in papers}
+        assert "pap_71501c2ba7f8" in ids
+        assert "pap_68b3f5254f5e" in ids
+
+    def test_list_papers_filter_narrowing(self, student):
+        r_all = student.get(f"{BASE_URL}/api/papers").json()
+        r_p1 = student.get(f"{BASE_URL}/api/papers", params={"paper": 1}).json()
+        assert len(r_p1) < len(r_all)
+        assert all(p["paper_number"] == 1 for p in r_p1)
+
+        r_search = student.get(f"{BASE_URL}/api/papers", params={"q": "Statistics"}).json()
+        assert all("statistics" in p["title"].lower() for p in r_search)
+
+    def test_get_paper_and_pdf_proxy(self, student):
+        pid = "pap_71501c2ba7f8"
+        r = student.get(f"{BASE_URL}/api/papers/{pid}")
+        assert r.status_code == 200
+        assert r.json()["paper_id"] == pid
+
+        r = student.get(f"{BASE_URL}/api/papers/{pid}/pdf")
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/pdf"
+        assert len(r.content) > 5000
+
+    def test_get_paper_404(self, student):
+        r = student.get(f"{BASE_URL}/api/papers/pap_does_not_exist")
+        assert r.status_code == 404
+
+    def test_paper_qa_cached(self, student):
+        r = student.post(f"{BASE_URL}/api/papers/pap_71501c2ba7f8/qa", timeout=120)
+        assert r.status_code == 200
+        d = r.json()
+        assert "items" in d
+        assert len(d["items"]) >= 1
+        item = d["items"][0]
+        for k in ("question", "steps", "answer"):
+            assert k in item
+        assert isinstance(item["steps"], list) and len(item["steps"]) >= 1
+
+    def test_paper_video_cached(self, student):
+        r = student.post(f"{BASE_URL}/api/papers/pap_68b3f5254f5e/video", timeout=180)
+        assert r.status_code == 200
+        d = r.json()
+        assert "scenes" in d
+        assert 3 <= len(d["scenes"]) <= 6
+        sc = d["scenes"][0]
+        for k in ("heading", "board", "narration", "audio"):
+            assert k in sc
+        # audio must be a non-trivial base64 mp3
+        assert len(sc["audio"]) > 1000
+
+    def test_ask_paper(self, student):
+        r = student.post(f"{BASE_URL}/api/papers/ask",
+                         json={"paper_id": "pap_71501c2ba7f8",
+                               "question": "Differentiate y = x^2 + 3x with respect to x."},
+                         timeout=90)
+        assert r.status_code == 200
+        d = r.json()
+        assert "answer" in d
+        assert len(d["answer"]) > 20
+
+
+class TestDrafts:
+    def test_toggle_and_list(self, student):
+        pid = "pap_e8ea989ede35"  # Paper 3
+        # Ensure clean state
+        student.delete(f"{BASE_URL}/api/drafts/{pid}")
+
+        # Save
+        r = student.post(f"{BASE_URL}/api/drafts", json={"paper_id": pid})
+        assert r.status_code == 200
+        assert r.json()["saved"] is True
+
+        # Verify present in list
+        r = student.get(f"{BASE_URL}/api/drafts")
+        assert r.status_code == 200
+        drafts = r.json()
+        assert any(p["paper_id"] == pid and p["saved"] is True for p in drafts)
+
+        # Toggle off
+        r = student.post(f"{BASE_URL}/api/drafts", json={"paper_id": pid})
+        assert r.status_code == 200
+        assert r.json()["saved"] is False
+
+        r = student.get(f"{BASE_URL}/api/drafts")
+        assert all(p["paper_id"] != pid for p in r.json())
+
+    def test_saved_flag_reflected_in_papers_list(self, student):
+        pid = "pap_71501c2ba7f8"
+        # Ensure saved
+        student.delete(f"{BASE_URL}/api/drafts/{pid}")
+        r = student.post(f"{BASE_URL}/api/drafts", json={"paper_id": pid})
+        assert r.status_code == 200
+        papers = student.get(f"{BASE_URL}/api/papers").json()
+        target = next(p for p in papers if p["paper_id"] == pid)
+        assert target["saved"] is True
+        # Cleanup
+        student.delete(f"{BASE_URL}/api/drafts/{pid}")
+
+
 # Teacher -----------------------------------------------------------------
 class TestTeacher:
     def test_teacher_stats(self, teacher):

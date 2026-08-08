@@ -34,8 +34,8 @@ export default function AppLayout({ children }) {
                     <GraduationCap className="h-5 w-5 text-white" />
                 </div>
                 <div>
-                    <h1 className="font-display font-bold text-lg leading-none text-primary">GCSMART</h1>
-                    <p className="text-xs text-muted-foreground mt-0.5">Educational Ecosystem</p>
+                    <h1 className="font-display font-bold text-lg leading-none text-primary">GCSHARP</h1>
+                    <p className="text-xs text-muted-foreground mt-0.5">Sharpening Potential</p>
                 </div>
             </div>
 

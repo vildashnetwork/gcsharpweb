@@ -28,8 +28,8 @@ export default function Login() {
                         <GraduationCap className="h-6 w-6 text-white" />
                     </div>
                     <div>
-                        <h1 className="text-2xl font-display font-bold leading-none">GCSMART</h1>
-                        <p className="text-sm text-slate-400">Educational Ecosystem</p>
+                        <h1 className="text-2xl font-display font-bold leading-none">GCSHARP</h1>
+                        <p className="text-sm text-slate-400">Global Classroom Sharpening Potential</p>
                     </div>
                 </div>
 
@@ -57,7 +57,7 @@ export default function Login() {
                         ))}
                     </div>
                 </div>
-                <p className="relative z-10 text-xs text-slate-500">© 2026 GCSMART. Premium AI-powered learning.</p>
+                <p className="relative z-10 text-xs text-slate-500">© 2026 GCSHARP. Premium AI-powered learning.</p>
             </div>
 
             {/* Right: auth */}
@@ -75,7 +75,7 @@ export default function Login() {
                         <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center">
                             <GraduationCap className="h-5 w-5 text-white" />
                         </div>
-                        <h1 className="text-xl font-display font-bold">GCSMART</h1>
+                        <h1 className="text-xl font-display font-bold">GCSHARP</h1>
                     </div>
 
                     <h2 className="text-3xl font-display font-bold mb-2">Welcome back</h2>

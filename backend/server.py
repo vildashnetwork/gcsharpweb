@@ -1,20 +1,24 @@
 import os
+import io
 import json
 import uuid
+import base64
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
 import httpx
+from pypdf import PdfReader
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response as FastResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+from emergentintegrations.llm.openai import OpenAITextToSpeech
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -545,7 +549,7 @@ async def seed_demo():
             "user_id": tid, "email": "demo.teacher@gcsmart.cm",
             "name": "Dr. Amadou Bello", "picture": "",
             "role": "teacher", "onboarded": True, "specialization": "Mathematics",
-            "bio": "Head of STEM Research, GCSMART Academy", "institution": "GCSMART Academy",
+            "bio": "Head of STEM Research, GCSHARP Academy", "institution": "GCSHARP Academy",
             "xp": 0, "level": 1, "streak": 0,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -570,11 +574,249 @@ async def seed_demo():
                 "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(), **c,
             })
+
+    if await db.papers.count_documents({}) == 0:
+        A = "https://customer-assets-0z36b82j.emergentagent.net/job_cameroon-study-hub/artifacts"
+        MECH2 = f"{A}/zo09xaaa_A-LEVEL-2025-Pure-mathematics-with-mechanics-2.pdf"
+        MECH3 = f"{A}/bxpv5vvt_A-LEVEL-2025-Pure-mathematics-with-mechanics-3.pdf"
+        STAT2 = f"{A}/uar8038x_A-LEVEL-2025-Pure-mathematics-with-statistics-2.pdf"
+        STAT3 = f"{A}/pxnpt9pk_A-LEVEL-2025-Pure-mathematics-with-statistics-3.pdf"
+        STAT1 = f"{A}/bpetqdqc_PURE%20MATHEMATICS%20with%20statistics%20paper%201.pdf"
+        seed_papers = [
+            # Real uploaded papers
+            {"title": "Pure Mathematics with Statistics — Paper 1 (MCQ)", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2025, "paper_number": 1, "pdf_url": STAT1, "description": "Official 2025 A-Level multiple choice paper."},
+            {"title": "Pure Mathematics with Statistics — Paper 2", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2025, "paper_number": 2, "pdf_url": STAT2, "description": "Official 2025 A-Level structured/theory paper."},
+            {"title": "Pure Mathematics with Statistics — Paper 3", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2025, "paper_number": 3, "pdf_url": STAT3, "description": "Official 2025 A-Level essay/problem paper."},
+            {"title": "Pure Mathematics with Mechanics — Paper 2", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2025, "paper_number": 2, "pdf_url": MECH2, "description": "Official 2025 A-Level mechanics paper."},
+            {"title": "Pure Mathematics with Mechanics — Paper 3", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2025, "paper_number": 3, "pdf_url": MECH3, "description": "Official 2025 A-Level mechanics paper."},
+            # Extra test papers (reuse PDFs) for filter variety
+            {"title": "Pure Mathematics with Mechanics — Paper 1 (MCQ)", "subject": "Pure Mathematics", "level": "GCE A Level", "year": 2024, "paper_number": 1, "pdf_url": STAT1, "description": "2024 A-Level mechanics MCQ (sample)."},
+            {"title": "Physics — Paper 1 (MCQ)", "subject": "Physics", "level": "GCE A Level", "year": 2024, "paper_number": 1, "pdf_url": STAT1, "description": "2024 A-Level Physics multiple choice (sample)."},
+            {"title": "Physics — Paper 2", "subject": "Physics", "level": "GCE A Level", "year": 2024, "paper_number": 2, "pdf_url": MECH2, "description": "2024 A-Level Physics structured paper (sample)."},
+            {"title": "Chemistry — Paper 1 (MCQ)", "subject": "Chemistry", "level": "GCE A Level", "year": 2023, "paper_number": 1, "pdf_url": STAT1, "description": "2023 A-Level Chemistry MCQ (sample)."},
+            {"title": "Chemistry — Paper 2", "subject": "Chemistry", "level": "GCE A Level", "year": 2023, "paper_number": 2, "pdf_url": STAT2, "description": "2023 A-Level Chemistry theory paper (sample)."},
+            {"title": "Economics — Paper 1 (MCQ)", "subject": "Economics", "level": "GCE A Level", "year": 2024, "paper_number": 1, "pdf_url": STAT1, "description": "2024 A-Level Economics MCQ (sample)."},
+            {"title": "Computer Science — Paper 2", "subject": "Computer Science", "level": "HND", "year": 2024, "paper_number": 2, "pdf_url": MECH2, "description": "2024 HND Computer Science paper (sample)."},
+        ]
+        for sp in seed_papers:
+            await db.papers.insert_one({
+                "paper_id": f"pap_{uuid.uuid4().hex[:12]}",
+                "created_at": datetime.now(timezone.utc).isoformat(), **sp,
+            })
+    return {"ok": True}
+
+class AskRequest(BaseModel):
+    paper_id: str
+    question: str
+
+class DraftRequest(BaseModel):
+    paper_id: str
+
+# ----------------------------- PDF helpers -----------------------------
+
+_pdf_cache = {}
+
+async def fetch_pdf_bytes(url: str) -> bytes:
+    if url in _pdf_cache:
+        return _pdf_cache[url]
+    async with httpx.AsyncClient(timeout=45, follow_redirects=True) as hc:
+        r = await hc.get(url)
+    r.raise_for_status()
+    _pdf_cache[url] = r.content
+    return r.content
+
+def extract_pdf_text(data: bytes, max_chars: int = 9000) -> str:
+    reader = PdfReader(io.BytesIO(data))
+    parts = []
+    for p in reader.pages:
+        parts.append(p.extract_text() or "")
+    return "\n".join(parts)[:max_chars]
+
+def _clean_json(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+    return json.loads(text)
+
+# ----------------------------- Papers module -----------------------------
+
+@api_router.get("/papers/filters")
+async def paper_filters(user: dict = Depends(get_current_user)):
+    papers = await db.papers.find({}, {"_id": 0}).to_list(1000)
+    levels = sorted({p["level"] for p in papers})
+    subjects = sorted({p["subject"] for p in papers})
+    years = sorted({p["year"] for p in papers}, reverse=True)
+    return {"levels": levels, "subjects": subjects, "years": years, "papers": [1, 2, 3]}
+
+@api_router.get("/papers")
+async def list_papers(level: Optional[str] = None, subject: Optional[str] = None,
+                      year: Optional[int] = None, paper: Optional[int] = None,
+                      q: Optional[str] = None, user: dict = Depends(get_current_user)):
+    query = {}
+    if level: query["level"] = level
+    if subject: query["subject"] = subject
+    if year: query["year"] = year
+    if paper: query["paper_number"] = paper
+    if q: query["title"] = {"$regex": q, "$options": "i"}
+    papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
+    drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
+    saved = {d["paper_id"] for d in drafts}
+    for p in papers:
+        p["saved"] = p["paper_id"] in saved
+    return papers
+
+@api_router.get("/papers/{paper_id}")
+async def get_paper(paper_id: str, user: dict = Depends(get_current_user)):
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    d = await db.drafts.find_one({"user_id": user["user_id"], "paper_id": paper_id}, {"_id": 0})
+    p["saved"] = bool(d)
+    return p
+
+@api_router.get("/papers/{paper_id}/pdf")
+async def proxy_pdf(paper_id: str, user: dict = Depends(get_current_user)):
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    try:
+        data = await fetch_pdf_bytes(p["pdf_url"])
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not load PDF")
+    return FastResponse(content=data, media_type="application/pdf",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+@api_router.post("/papers/{paper_id}/qa")
+async def generate_paper_qa(paper_id: str, user: dict = Depends(get_current_user)):
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    cached = await db.paper_qa_cache.find_one({"paper_id": paper_id}, {"_id": 0})
+    if cached:
+        return {"items": cached["items"], "cached": True}
+
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    text = extract_pdf_text(data)
+    system = ("You are a senior Cameroon GCE examiner. Read the exam paper text and produce a clear, "
+              "step-by-step worked solution section. Return STRICT JSON only.")
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"PAPER TEXT:\n{text}\n\n"
+        "Extract the individual questions and for each return a JSON object. "
+        "Return JSON: {\"items\":[{\"number\":\"1\",\"question\":\"...\",\"steps\":[\"step 1\",\"step 2\"],\"answer\":\"final answer\"}]}. "
+        "Solve at least the first 8 questions you can identify. Keep steps concise and mathematically correct. Return ONLY JSON."
+    )
+    chat = _new_chat(f"qa_{uuid.uuid4().hex}", system)
+    resp = await chat.send_message(UserMessage(text=prompt))
+    try:
+        parsed = _clean_json(resp)
+        items = parsed.get("items", [])
+    except Exception:
+        logger.error(f"QA parse fail: {resp[:200]}")
+        raise HTTPException(status_code=502, detail="AI could not solve this paper")
+    await db.paper_qa_cache.insert_one({"paper_id": paper_id, "items": items,
+                                        "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"items": items, "cached": False}
+
+@api_router.post("/papers/{paper_id}/video")
+async def generate_video_solution(paper_id: str, user: dict = Depends(get_current_user)):
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    cached = await db.paper_video_cache.find_one({"paper_id": paper_id}, {"_id": 0})
+    if cached:
+        return {"scenes": cached["scenes"], "cached": True}
+
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    text = extract_pdf_text(data, max_chars=7000)
+    system = ("You are a master teacher creating a narrated video lesson that solves an exam question "
+              "step by step on a virtual whiteboard. Return STRICT JSON only.")
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"PAPER TEXT:\n{text}\n\n"
+        "Pick the FIRST substantial question and create a video walkthrough that solves it. "
+        "Return JSON: {\"title\":\"...\",\"question\":\"...\",\"scenes\":[{\"heading\":\"Step title\","
+        "\"board\":[\"line shown on whiteboard\",\"another line\"],\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
+        "Create 4 to 6 scenes ending with the final answer. Narration must be natural spoken English. Return ONLY JSON."
+    )
+    chat = _new_chat(f"vid_{uuid.uuid4().hex}", system)
+    resp = await chat.send_message(UserMessage(text=prompt))
+    try:
+        parsed = _clean_json(resp)
+        raw_scenes = parsed.get("scenes", [])
+    except Exception:
+        logger.error(f"Video parse fail: {resp[:200]}")
+        raise HTTPException(status_code=502, detail="AI could not build a video solution")
+
+    tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
+    scenes = []
+    for i, sc in enumerate(raw_scenes[:6]):
+        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+        audio_b64 = ""
+        try:
+            audio_b64 = await tts.generate_speech_base64(text=narration or "Next step.",
+                                                         model="tts-1", voice="onyx")
+        except Exception as e:
+            logger.error(f"TTS fail scene {i}: {e}")
+        scenes.append({
+            "heading": sc.get("heading", f"Step {i+1}"),
+            "board": sc.get("board", []),
+            "narration": narration,
+            "audio": audio_b64,
+        })
+    doc = {"paper_id": paper_id, "title": parsed.get("title", p["title"]),
+           "question": parsed.get("question", ""), "scenes": scenes,
+           "created_at": datetime.now(timezone.utc).isoformat()}
+    await db.paper_video_cache.insert_one(dict(doc))
+    return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
+
+@api_router.post("/papers/ask")
+async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user)):
+    p = await db.papers.find_one({"paper_id": req.paper_id}, {"_id": 0})
+    subject = p["subject"] if p else "General"
+    system = (f"You are GC AI, an expert {subject} tutor. A student highlighted a question from an exam paper. "
+              "Solve it clearly with concise numbered steps and a final answer.")
+    chat = _new_chat(f"ask_{uuid.uuid4().hex}", system)
+    resp = await chat.send_message(UserMessage(text=f"Solve this exam question step by step:\n\n{req.question}"))
+    return {"answer": resp}
+
+# ----------------------------- Drafts -----------------------------
+
+@api_router.get("/drafts")
+async def list_drafts(user: dict = Depends(get_current_user)):
+    drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    ids = [d["paper_id"] for d in drafts]
+    papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    pmap = {p["paper_id"]: p for p in papers}
+    result = []
+    for d in drafts:
+        pp = pmap.get(d["paper_id"])
+        if pp:
+            pp = dict(pp); pp["saved"] = True; pp["saved_at"] = d["created_at"]
+            result.append(pp)
+    return result
+
+@api_router.post("/drafts")
+async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
+    existing = await db.drafts.find_one({"user_id": user["user_id"], "paper_id": req.paper_id})
+    if existing:
+        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
+        return {"saved": False}
+    await db.drafts.insert_one({"user_id": user["user_id"], "paper_id": req.paper_id,
+                                "created_at": datetime.now(timezone.utc).isoformat()})
+    return {"saved": True}
+
+@api_router.delete("/drafts/{paper_id}")
+async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
+    await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
     return {"ok": True}
 
 @api_router.get("/")
 async def root():
-    return {"message": "GCSMART API"}
+    return {"message": "GCSHARP API"}
 
 app.include_router(api_router)
 

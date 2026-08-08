@@ -11,6 +11,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import Dashboard from "@/pages/Dashboard";
 import StudyCenter from "@/pages/StudyCenter";
 import ExamMode from "@/pages/ExamMode";
+import PaperReader from "@/pages/PaperReader";
 import AITutor from "@/pages/AITutor";
 import Analytics from "@/pages/Analytics";
 import TeacherPortal from "@/pages/TeacherPortal";
@@ -51,6 +52,7 @@ function AppRouter() {
             <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
             <Route path="/study" element={<Protected><StudyCenter /></Protected>} />
             <Route path="/study/exam" element={<Protected><ExamMode /></Protected>} />
+            <Route path="/study/paper/:paperId" element={<Protected><PaperReader /></Protected>} />
             <Route path="/ai" element={<Protected><AITutor /></Protected>} />
             <Route path="/analytics" element={<Protected><Analytics /></Protected>} />
             <Route path="/teacher" element={<Protected><TeacherPortal /></Protected>} />

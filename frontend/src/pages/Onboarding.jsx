@@ -74,7 +74,7 @@ export default function Onboarding() {
                         <GraduationCap className="h-5 w-5 text-white" />
                     </div>
                     <div>
-                        <h1 className="font-display font-bold text-lg leading-none">GCSMART</h1>
+                        <h1 className="font-display font-bold text-lg leading-none">GCSHARP</h1>
                         <p className="text-xs text-muted-foreground">Let's set up your account</p>
                     </div>
                 </div>
