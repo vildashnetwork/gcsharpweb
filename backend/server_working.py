@@ -30,7 +30,8 @@ load_dotenv(ROOT_DIR / '.env')
 MONGO_URL = os.environ.get('MONGO_URL', 'mongodb+srv://gcsharp-user:HMLfa8jjFgvhmOut@gcsharp.nh4zzwi.mongodb.net/?retryWrites=true&w=majority')
 DB_NAME = os.environ.get('DB_NAME', 'gcsmart')
 CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
-APP_URL = os.environ.get('APP_URL', 'http://localhost:8000')
+APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
+APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
 
 # Initialize MongoDB
 client = AsyncIOMotorClient(MONGO_URL)
@@ -66,55 +67,71 @@ app.add_middleware(
 )
 
 # ============================================================
-# Simple LLM Client (Replaces emergentintegrations)
+# Simple LLM Client (OpenRouter SDK Compatible)
 # ============================================================
 
 class SimpleLLM:
-    """Simple LLM client using OpenRouter API or Hugging Face fallback"""
+    """Simple LLM client using OpenRouter API with Hugging Face fallback"""
     
-    def __init__(self, api_key: str = "", model: str = "openai/gpt-3.5-turbo"):
+    def __init__(self, api_key: str = "", model: str = "google/gemini-2.5-flash:free"):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.model = model
         self.base_url = "https://openrouter.ai/api/v1"
         self.system_message = ""
         self.session_id = None
-        self.referer = os.environ.get("APP_URL", "http://localhost:8000")
+        self.referer = os.environ.get("APP_URL", "https://gcsharpweb.onrender.com")
+        self.title = os.environ.get("APP_NAME", "GCSMART AI")
     
     def with_model(self, provider: str, model: str):
         self.model = f"{provider}/{model}" if provider else model
         return self
     
     async def send_message(self, message: str) -> str:
-        """Send message to LLM and get response"""
+        """Send message to OpenRouter API"""
         try:
             if not self.api_key:
-                return await self._call_huggingface(message)
+                return "Error: OpenRouter API key not configured. Please set OPENROUTER_API_KEY in .env"
+            
+            # Build request payload as per OpenRouter docs
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": self.system_message},
+                    {"role": "user", "content": message}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 1000,
+            }
+            
+            # Headers as per OpenRouter documentation
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self.referer,  # Required for rankings
+                "X-OpenRouter-Title": self.title,  # Required for rankings
+            }
             
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": self.referer,
-                        "X-Title": "GCSMART AI"
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": self.system_message},
-                            {"role": "user", "content": message}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 1000,
-                    }
+                    headers=headers,
+                    json=payload
                 )
+                
                 if response.status_code == 200:
                     data = response.json()
                     return data["choices"][0]["message"]["content"]
                 else:
-                    logger.error(f"OpenRouter API error: {response.status_code}")
+                    error_msg = f"OpenRouter API error: {response.status_code}"
+                    try:
+                        error_data = response.json()
+                        if "error" in error_data:
+                            error_msg += f" - {error_data['error'].get('message', '')}"
+                    except:
+                        pass
+                    logger.error(error_msg)
                     return await self._call_huggingface(message)
+                    
         except Exception as e:
             logger.error(f"LLM error: {e}")
             return await self._call_huggingface(message)
@@ -137,7 +154,38 @@ class SimpleLLM:
                 return "AI service temporarily unavailable. Please try again."
         except Exception as e:
             logger.error(f"Hugging Face error: {e}")
-            return f"Error: {str(e)}"
+            return f"I apologize, but I'm currently unable to generate a response. Error: {str(e)}"
+
+# ============================================================
+# Local Math Solver (Fallback)
+# ============================================================
+
+def solve_math_local(question: str) -> Optional[str]:
+    """Solve math problems locally using SymPy"""
+    try:
+        import sympy as sp
+        import re
+        
+        # Extract expression
+        expr_str = re.sub(r'(solve|find|simplify|integrate|differentiate|for|the|of)', '', question.lower())
+        math_expr = re.findall(r'[0-9xya-z+\-*/^=().]', expr_str)
+        expr_str = ''.join(math_expr).strip()
+        
+        if not expr_str:
+            return None
+            
+        if '=' in expr_str:
+            left, right = expr_str.split('=')
+            expr = sp.parse_expr(f"{left} - ({right})")
+            solutions = sp.solve(expr)
+            if solutions:
+                return f"Solutions: {', '.join(str(s) for s in solutions)}"
+        else:
+            expr = sp.parse_expr(expr_str)
+            return str(sp.simplify(expr))
+    except Exception as e:
+        logger.error(f"Local math solver error: {e}")
+        return None
 
 # ============================================================
 # Pydantic Models
@@ -206,13 +254,17 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class SolveRequest(BaseModel):
+    question: str
+    subject: Optional[str] = None
+
 # ============================================================
 # Auth Helpers
 # ============================================================
 
 def _new_chat(session_id: str, system: str):
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    model = os.environ.get("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct:free")
+    model = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash:free")
     chat = SimpleLLM(api_key=api_key, model=model)
     chat.system_message = system
     chat.session_id = session_id
@@ -414,6 +466,46 @@ async def exam_structure():
     return {"levels": EXAM_STRUCTURE, "years": years, "papers": [1, 2, 3]}
 
 # ============================================================
+# Math Solver Endpoint
+# ============================================================
+
+@api_router.post("/solve")
+async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current_user)):
+    """Solve math problems using local SymPy or AI"""
+    # Try local solver first
+    local_result = solve_math_local(req.question)
+    if local_result:
+        return {
+            "success": True,
+            "answer": local_result,
+            "source": "local_solver",
+            "confidence": 0.95,
+            "question": req.question,
+            "subject": req.subject or "Mathematics"
+        }
+    
+    # Fall back to AI
+    try:
+        system = "You are a math expert. Solve the problem step by step. Return the final answer clearly."
+        chat = _new_chat(f"solve_{uuid.uuid4().hex[:12]}", system)
+        response = await chat.send_message(req.question)
+        return {
+            "success": True,
+            "answer": response,
+            "source": "ai_solver",
+            "confidence": 0.85,
+            "question": req.question,
+            "subject": req.subject or "General"
+        }
+    except Exception as e:
+        logger.error(f"AI solve error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "suggestion": "Try rephrasing your question or use specific math notation"
+        }
+
+# ============================================================
 # AI Question Generation
 # ============================================================
 
@@ -592,6 +684,7 @@ async def ai_session_detail(session_id: str, user: dict = Depends(get_current_us
 
 @api_router.post("/ai/chat")
 async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+    """Streaming AI chat endpoint for the AI Tutor"""
     session_id = req.session_id or f"chat_{uuid.uuid4().hex[:12]}"
     session = await db.ai_sessions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
     if not session:
@@ -618,20 +711,30 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
     async def event_gen():
         full = ""
         try:
+            # Build context from conversation history
             context_prefix = ""
             if history:
                 recent = history[-6:]
                 context_prefix = "Conversation so far:\n" + "\n".join(
                     f"{m['role'].upper()}: {m['content']}" for m in recent
                 ) + "\n\nNow answer the new question.\n\n"
+            
+            # Get AI response
             response = await chat.send_message(context_prefix + req.message)
             full = response
+            
+            # Stream response in chunks
             for chunk in [response[i:i+50] for i in range(0, len(response), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
+                
         except Exception as e:
             logger.error(f"AI stream error: {e}")
-            yield f"data: {json.dumps({'delta': ' [error contacting AI]'})}\n\n"
+            # Send error message to frontend
+            error_msg = "I'm having trouble connecting to my AI service. Please try again in a moment."
+            for chunk in [error_msg[i:i+50] for i in range(0, len(error_msg), 50)]:
+                yield f"data: {json.dumps({'delta': chunk})}\n\n"
         
+        # Persist conversation
         new_messages = history + [
             {"role": "user", "content": req.message, "ts": datetime.now(timezone.utc).isoformat()},
             {"role": "assistant", "content": full, "ts": datetime.now(timezone.utc).isoformat()},
@@ -642,15 +745,37 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         )
         yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        event_gen(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Content-Type": "text/event-stream",
+        }
+    )
 
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
+    """Explain a concept using AI"""
+    # Try local math solver first
+    local_result = solve_math_local(req.message)
+    if local_result:
+        return {"answer": local_result, "source": "local_solver"}
+    
+    # Fall back to AI
     system = "You are GC AI, an expert exam tutor. Give a concise, clear step-by-step explanation."
     chat = _new_chat(f"explain_{uuid.uuid4().hex}", system)
-    resp = await chat.send_message(req.message)
-    return {"answer": resp}
+    try:
+        resp = await chat.send_message(req.message)
+        return {"answer": resp, "source": "ai_solver"}
+    except Exception as e:
+        logger.error(f"AI explain error: {e}")
+        return {
+            "answer": "I'm having trouble connecting to my AI service. Please try again later.",
+            "source": "error",
+            "error": str(e)
+        }
 
 # ============================================================
 # Teacher: Courses & Earnings
@@ -1012,6 +1137,7 @@ async def root():
         "endpoints": {
             "auth": "/api/auth",
             "exam": "/api/exam/structure",
+            "solve": "/api/solve",
             "papers": "/api/papers",
             "ai": "/api/ai/chat",
             "docs": "/docs"
@@ -1039,9 +1165,10 @@ if __name__ == "__main__":
     
     print("🚀 Starting GCSMART API Server...")
     print(f"📚 MongoDB: {MONGO_URL[:50]}...")
-    print(f"🌐 API: http://localhost:{PORT}")
-    print(f"📖 Docs: http://localhost:{PORT}/docs")
+    print(f"🌐 API: {APP_URL}")
+    print(f"📖 Docs: {APP_URL}/docs")
     print(f"🔗 CORS Origins: {CORS_ORIGINS}")
+    print(f"🤖 AI Model: {os.environ.get('OPENROUTER_MODEL', 'google/gemini-2.5-flash:free')}")
     
     uvicorn.run(
         app, 
