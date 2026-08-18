@@ -1160,6 +1160,7 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 
 
 
+
 # @api_router.get("/dashboard/stats")
 # async def dashboard_stats(user: dict = Depends(get_current_user)):
 #     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
@@ -1167,15 +1168,15 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 #     correct = sum(a["score"] for a in attempts)
 #     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
 
-#     # Study time now comes from two sources:
+#     # Study time comes from two sources:
 #     #  1. time_spent recorded on quiz attempts
 #     #  2. active reading time recorded on paper_reading_time (PaperReader screen)
 #     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
 
-#     reading_docs = await db.paper_reading_time.find(
-#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1}
+#     reading_docs_full = await db.paper_reading_time.find(
+#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1}
 #     ).to_list(2000)
-#     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs)
+#     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
 
 #     study_seconds = attempt_seconds + reading_seconds
 #     study_hours = round(study_seconds / 3600, 1)
@@ -1204,23 +1205,16 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 #         except Exception:
 #             pass
 
-#     # Reading minutes per day (from last_updated on each paper's reading-time doc)
-#     for d_doc in reading_docs:
-#         pass  # total_seconds only; per-day breakdown handled below via a dedicated query
-
-#     reading_docs_full = await db.paper_reading_time.find(
-#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "last_updated": 1}
-#     ).to_list(2000)
+#     # Reading minutes per day — read directly from each paper's
+#     # daily_seconds map so the chart reflects the actual day(s)
+#     # reading happened, not just the day of the last heartbeat.
 #     for d_doc in reading_docs_full:
-#         try:
-#             d = datetime.fromisoformat(d_doc["last_updated"])
-#             if d.tzinfo is None:
-#                 d = d.replace(tzinfo=timezone.utc)
-#             delta = (now.date() - d.date()).days
-#             if 0 <= delta < 7:
-#                 week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
-#         except Exception:
-#             pass
+#         daily = d_doc.get("daily_seconds") or {}
+#         for i in range(7):
+#             day_key = (now.date() - timedelta(days=i)).isoformat()
+#             secs = daily.get(day_key, 0)
+#             if secs:
+#                 week[6 - i] += round(secs / 60)
 
 #     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 #     weekday_today = now.weekday()
@@ -1229,7 +1223,7 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 #         idx = (weekday_today - 6 + i) % 7
 #         consistency.append({"day": days[idx], "minutes": week[i]})
 
-#         return {
+#     return {
 #         "study_hours": study_hours,
 #         "study_seconds": study_seconds,
 #         "questions_attempted": questions_attempted,
@@ -1253,14 +1247,6 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 
 
 
-
-
-
-
-
-
-
-
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
@@ -1274,7 +1260,7 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
 
     reading_docs_full = await db.paper_reading_time.find(
-        {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1}
+        {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
     ).to_list(2000)
     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
 
@@ -1305,16 +1291,30 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         except Exception:
             pass
 
-    # Reading minutes per day — read directly from each paper's
-    # daily_seconds map so the chart reflects the actual day(s)
-    # reading happened, not just the day of the last heartbeat.
+    # ✅ FIXED: Handle reading minutes per day
+    # If daily_seconds doesn't exist, use last_updated as a fallback
     for d_doc in reading_docs_full:
         daily = d_doc.get("daily_seconds") or {}
-        for i in range(7):
-            day_key = (now.date() - timedelta(days=i)).isoformat()
-            secs = daily.get(day_key, 0)
-            if secs:
-                week[6 - i] += round(secs / 60)
+        
+        # If daily_seconds is empty, use last_updated as fallback
+        if not daily and d_doc.get("last_updated"):
+            try:
+                d = datetime.fromisoformat(d_doc["last_updated"])
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=timezone.utc)
+                delta = (now.date() - d.date()).days
+                if 0 <= delta < 7:
+                    # Add the total_seconds to the day it was last updated
+                    week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
+            except Exception:
+                pass
+        else:
+            # Use daily_seconds if available
+            for i in range(7):
+                day_key = (now.date() - timedelta(days=i)).isoformat()
+                secs = daily.get(day_key, 0)
+                if secs:
+                    week[6 - i] += round(secs / 60)
 
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_today = now.weekday()
@@ -1338,6 +1338,8 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "consistency": consistency,
         "total_attempts": len(attempts),
     }
+
+
 # ============================================================
 # Leaderboard
 # ============================================================
