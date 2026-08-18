@@ -1,5 +1,5 @@
 // pages/VideoLibrary.jsx
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import api from "../lib/api";
 import {
@@ -40,6 +40,9 @@ import {
     RotateCw,
     PanelRight,
     PanelBottom,
+    History,
+    Trash2,
+    LayoutGrid,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -49,8 +52,6 @@ import { formatDistanceToNow } from "date-fns";
 // ============================================================
 // YouTube helpers
 // ============================================================
-// Pulls the 11-char video ID out of any common YouTube URL shape
-// (watch?v=, youtu.be/, embed/, shorts/), or accepts a bare ID.
 function getYouTubeId(url) {
     if (!url) return null;
     const trimmed = url.trim();
@@ -67,7 +68,7 @@ function getYouTubeEmbedUrl(url, { autoplay = false } = {}) {
     const id = getYouTubeId(url);
     if (!id) return null;
     const params = new URLSearchParams({
-        rel: "0", // don't show related videos from other channels at the end
+        rel: "0",
         modestbranding: "1",
         playsinline: "1",
         enablejsapi: "1",
@@ -77,7 +78,6 @@ function getYouTubeEmbedUrl(url, { autoplay = false } = {}) {
     return `https://www.youtube.com/embed/${id}?${params.toString()}`;
 }
 
-// mm:ss, or h:mm:ss once the video passes an hour
 function formatTime(seconds) {
     if (!Number.isFinite(seconds)) return "0:00";
     const h = Math.floor(seconds / 3600);
@@ -89,11 +89,6 @@ function formatTime(seconds) {
 
 // ============================================================
 // Custom Video Player
-// YouTube-style controls for direct video files (mp4/webm/ogg/mov...).
-// YouTube links skip this entirely and use the native YouTube iframe instead —
-// this component exists purely to give non-YouTube sources the same feel:
-// scrub bar with buffered range, volume slider, speed menu, 10s skip,
-// picture-in-picture, fullscreen, keyboard shortcuts, auto-hiding controls.
 // ============================================================
 const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
@@ -120,7 +115,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
     const [activeSourceIdx, setActiveSourceIdx] = useState(0);
     const [showQualityMenu, setShowQualityMenu] = useState(false);
 
-    // Reset player state whenever the video itself changes
     useEffect(() => {
         setPlaying(false);
         setLoading(true);
@@ -130,7 +124,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         setActiveSourceIdx(0);
     }, [src]);
 
-    // Wire up native <video> events
     useEffect(() => {
         const el = videoElRef.current;
         if (!el) return;
@@ -178,14 +171,12 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         };
     }, [activeSourceIdx, src]);
 
-    // Fullscreen state tracking
     useEffect(() => {
         const onFsChange = () => setFullscreen(document.fullscreenElement === containerRef.current);
         document.addEventListener("fullscreenchange", onFsChange);
         return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
 
-    // Auto-hide controls while playing and idle
     const scheduleHide = () => {
         clearTimeout(hideTimerRef.current);
         hideTimerRef.current = setTimeout(() => {
@@ -203,10 +194,8 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         } else {
             scheduleHide();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [playing]);
 
-    // Keyboard shortcuts, scoped to this player
     useEffect(() => {
         const onKeyDown = (e) => {
             if (!containerRef.current?.contains(document.activeElement) && document.activeElement !== document.body) return;
@@ -244,7 +233,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const togglePlay = () => {
@@ -298,7 +286,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         const time = el.currentTime;
         setActiveSourceIdx(idx);
         setShowQualityMenu(false);
-        // let the src swap, then restore position/playback
         requestAnimationFrame(() => {
             const fresh = videoElRef.current;
             if (!fresh) return;
@@ -324,7 +311,7 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                 await el.requestPictureInPicture();
             }
         } catch {
-            // PiP unsupported for this element/browser — fail silently
+            // PiP unsupported
         }
     };
 
@@ -339,7 +326,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
             onMouseMove={wake}
             onMouseLeave={() => playing && setShowControls(false)}
             onClick={(e) => {
-                // clicking the video itself toggles play, clicking a control shouldn't
                 if (e.target === videoElRef.current) togglePlay();
             }}
             onDoubleClick={toggleFullscreen}
@@ -353,14 +339,12 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                 onClick={togglePlay}
             />
 
-            {/* Loading spinner */}
             {loading && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                     <Loader2 className="h-10 w-10 text-white animate-spin" />
                 </div>
             )}
 
-            {/* Center play/pause tap target + icon flash */}
             {!loading && !playing && (
                 <button
                     onClick={togglePlay}
@@ -372,7 +356,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                 </button>
             )}
 
-            {/* Title, top-left, fades with controls */}
             {title && (
                 <div
                     className={`absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/70 to-transparent transition-opacity duration-200 ${showControls ? "opacity-100" : "opacity-0"
@@ -382,13 +365,11 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                 </div>
             )}
 
-            {/* Bottom control bar */}
             <div
                 className={`absolute bottom-0 left-0 right-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/85 via-black/50 to-transparent transition-opacity duration-200 ${showControls ? "opacity-100" : "opacity-0 pointer-events-none"
                     }`}
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* Scrub bar */}
                 <div
                     className="relative h-3 flex items-center cursor-pointer group/scrub mb-1"
                     onMouseDown={(e) => {
@@ -420,7 +401,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                         <RotateCw className="h-4.5 w-4.5" />
                     </button>
 
-                    {/* Volume */}
                     <div className="flex items-center gap-1.5 group/vol">
                         <button onClick={toggleMute} className="hover:opacity-80">
                             <VolumeIcon className="h-5 w-5" />
@@ -442,7 +422,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
 
                     <div className="flex-1" />
 
-                    {/* Speed */}
                     <div className="relative">
                         <button
                             onClick={() => {
@@ -471,7 +450,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                         )}
                     </div>
 
-                    {/* Quality, only shown when multiple sources were provided */}
                     {activeSources.length > 1 && (
                         <div className="relative">
                             <button
@@ -520,13 +498,25 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
 // ============================================================
 // Video Card Component
 // ============================================================
-function VideoCard({ video, onClick, isActive }) {
+function VideoCard({ video, onClick, isActive, onRemove }) {
     return (
         <div
             onClick={() => onClick(video)}
-            className={`group cursor-pointer rounded-xl overflow-hidden bg-card border border-border hover:border-primary/40 transition-all hover:-translate-y-0.5 ${isActive ? "ring-2 ring-primary" : ""
+            className={`group relative cursor-pointer rounded-xl overflow-hidden bg-card border border-border hover:border-primary/40 transition-all hover:-translate-y-0.5 ${isActive ? "ring-2 ring-primary" : ""
                 }`}
         >
+            {onRemove && (
+                <button
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        onRemove(video);
+                    }}
+                    title="Remove from history"
+                    className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/90"
+                >
+                    <Trash2 className="h-3.5 w-3.5" />
+                </button>
+            )}
             <div className="relative aspect-video bg-secondary">
                 {video.thumbnail ? (
                     <img
@@ -560,9 +550,49 @@ function VideoCard({ video, onClick, isActive }) {
                     <span>•</span>
                     <span>{video.views || 0} views</span>
                     <span>•</span>
-                    <span>{video.created_at ? formatDistanceToNow(new Date(video.created_at), { addSuffix: true }) : "Recently"}</span>
+                    <span>
+                        {video.watched_at
+                            ? `Watched ${formatDistanceToNow(new Date(video.watched_at), { addSuffix: true })}`
+                            : video.created_at
+                                ? formatDistanceToNow(new Date(video.created_at), { addSuffix: true })
+                                : "Recently"}
+                    </span>
                 </p>
             </div>
+        </div>
+    );
+}
+
+// ============================================================
+// Library Tabs
+// ============================================================
+const LIBRARY_TABS = [
+    { id: "browse", label: "All videos", icon: LayoutGrid },
+    { id: "recent", label: "Recently watched", icon: History },
+    { id: "liked", label: "Liked", icon: ThumbsUp },
+    { id: "saved", label: "Saved", icon: Bookmark },
+];
+
+function LibraryTabs({ active, onChange }) {
+    return (
+        <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide">
+            {LIBRARY_TABS.map((tab) => {
+                const Icon = tab.icon;
+                const isActive = active === tab.id;
+                return (
+                    <button
+                        key={tab.id}
+                        onClick={() => onChange(tab.id)}
+                        className={`inline-flex items-center gap-1.5 whitespace-nowrap px-3 py-1.5 rounded-full text-sm border transition-colors ${isActive
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "border-border text-muted-foreground hover:bg-secondary"
+                            }`}
+                    >
+                        <Icon className="h-3.5 w-3.5" />
+                        {tab.label}
+                    </button>
+                );
+            })}
         </div>
     );
 }
@@ -583,45 +613,47 @@ export default function VideoLibrary() {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [isLiked, setIsLiked] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
-    const [relatedVideos, setRelatedVideos] = useState([]);
-    const [layoutMode, setLayoutMode] = useState("sidebar"); // "sidebar" | "stacked"
+    const [layoutMode, setLayoutMode] = useState("sidebar");
     const videoRef = useRef(null);
 
-    // Available filters
+    const [libraryView, setLibraryView] = useState("browse");
+    const [recentlyWatched, setRecentlyWatched] = useState([]);
+    const [likedVideos, setLikedVideos] = useState([]);
+    const [savedVideos, setSavedVideos] = useState([]);
+    const [tabLoading, setTabLoading] = useState(false);
     const [filters, setFilters] = useState({ levels: [], subjects: [] });
 
     // ============================================================
-    // Load Videos
+    // Load Videos - wrapped in useCallback to fix dependency warning
     // ============================================================
-    useEffect(() => {
-        loadVideos();
-    }, []);
-
-    const loadVideos = async () => {
+    const loadVideos = useCallback(async () => {
         setLoading(true);
         try {
             const response = await api.get("/courses");
             const data = response.data || [];
             setVideos(data);
 
-            // Extract filters
             const levels = [...new Set(data.map(v => v.level).filter(Boolean))];
             const subjects = [...new Set(data.map(v => v.subject).filter(Boolean))];
             setFilters({ levels, subjects });
 
-            // If videoId in URL, load that video
             if (videoId) {
-                const video = data.find(v => v.course_id === videoId);
+                let video = data.find(v => v.course_id === videoId);
+                if (!video) {
+                    try {
+                        const single = await api.get(`/courses/${videoId}`);
+                        video = single.data;
+                    } catch {
+                        // Falls through
+                    }
+                }
                 if (video) {
                     setCurrentVideo(video);
-                    loadRelatedVideos(video, data);
                 } else if (data.length > 0) {
                     setCurrentVideo(data[0]);
-                    loadRelatedVideos(data[0], data);
                 }
             } else if (data.length > 0) {
                 setCurrentVideo(data[0]);
-                loadRelatedVideos(data[0], data);
             }
         } catch (error) {
             console.error("Failed to load videos:", error);
@@ -629,15 +661,134 @@ export default function VideoLibrary() {
         } finally {
             setLoading(false);
         }
+    }, [videoId]);
+
+    // ============================================================
+    // ✅ FIXED: useEffect with loadVideos in dependency array
+    // ============================================================
+    useEffect(() => {
+        loadVideos();
+    }, [loadVideos]);
+
+    useEffect(() => {
+        if (currentVideo) {
+            setIsLiked(!!currentVideo.liked);
+            setIsSaved(!!currentVideo.saved);
+        }
+    }, [currentVideo?.course_id, currentVideo?.liked, currentVideo?.saved]);
+
+    // ============================================================
+    // Library tabs
+    // ============================================================
+    useEffect(() => {
+        if (libraryView === "recent") loadRecentlyWatched();
+        else if (libraryView === "liked") loadLikedVideos();
+        else if (libraryView === "saved") loadSavedVideos();
+    }, [libraryView]);
+
+    const loadRecentlyWatched = async () => {
+        setTabLoading(true);
+        try {
+            const { data } = await api.get("/videos/recently-watched");
+            setRecentlyWatched(data || []);
+        } catch (error) {
+            console.error("Failed to load recently watched:", error);
+            toast.error("Couldn't load your recently watched videos");
+        } finally {
+            setTabLoading(false);
+        }
     };
 
-    const loadRelatedVideos = (video, allVideos) => {
-        if (!video) return;
-        const related = allVideos
-            .filter(v => v.course_id !== video.course_id)
-            .filter(v => v.subject === video.subject || v.level === video.level)
-            .slice(0, 10);
-        setRelatedVideos(related);
+    const loadLikedVideos = async () => {
+        setTabLoading(true);
+        try {
+            const { data } = await api.get("/videos/liked");
+            setLikedVideos(data || []);
+        } catch (error) {
+            console.error("Failed to load liked videos:", error);
+            toast.error("Couldn't load your liked videos");
+        } finally {
+            setTabLoading(false);
+        }
+    };
+
+    const loadSavedVideos = async () => {
+        setTabLoading(true);
+        try {
+            const { data } = await api.get("/videos/saved");
+            setSavedVideos(data || []);
+        } catch (error) {
+            console.error("Failed to load saved videos:", error);
+            toast.error("Couldn't load your saved videos");
+        } finally {
+            setTabLoading(false);
+        }
+    };
+
+    const handleClearRecentlyWatched = async () => {
+        try {
+            await api.delete("/videos/recently-watched");
+            setRecentlyWatched([]);
+            toast.success("Cleared your watch history");
+        } catch (error) {
+            console.error("Failed to clear watch history:", error);
+            toast.error("Couldn't clear your watch history");
+        }
+    };
+
+    const handleRemoveRecentlyWatched = async (video) => {
+        try {
+            await api.delete(`/videos/recently-watched/${video.course_id}`);
+            setRecentlyWatched((prev) => prev.filter((v) => v.course_id !== video.course_id));
+        } catch (error) {
+            console.error("Failed to remove from watch history:", error);
+            toast.error("Couldn't remove that video from your history");
+        }
+    };
+
+    const patchVideoEverywhere = (courseId, patch) => {
+        const apply = (list) =>
+            list.map((v) => (v.course_id === courseId ? { ...v, ...patch } : v));
+
+        setVideos((prev) => apply(prev));
+        setRecentlyWatched((prev) => apply(prev));
+        setLikedVideos((prev) => apply(prev));
+        setSavedVideos((prev) => apply(prev));
+        setCurrentVideo((prev) => (prev?.course_id === courseId ? { ...prev, ...patch } : prev));
+    };
+
+    // ============================================================
+    // Like / Save
+    // ============================================================
+    const handleToggleLike = async () => {
+        if (!currentVideo) return;
+        const courseId = currentVideo.course_id;
+        try {
+            const { data } = await api.post(`/courses/${courseId}/like`);
+            patchVideoEverywhere(courseId, { liked: data.liked, likes: data.likes });
+            if (!data.liked && libraryView === "liked") {
+                setLikedVideos((prev) => prev.filter((v) => v.course_id !== courseId));
+            }
+        } catch (error) {
+            console.error("Failed to toggle like:", error);
+            toast.error("Couldn't update like");
+        }
+    };
+
+    const handleToggleSave = async () => {
+        if (!currentVideo) return;
+        const courseId = currentVideo.course_id;
+        try {
+            const { data } = await api.post(`/courses/${courseId}/save`);
+            patchVideoEverywhere(courseId, { saved: data.saved });
+            if (!data.saved && libraryView === "saved") {
+                setSavedVideos((prev) => prev.filter((v) => v.course_id !== courseId));
+            }
+            toast.success(data.saved ? "Saved to your library" : "Removed from your library");
+        } catch (error) {
+            console.error("Failed to toggle save:", error);
+            toast.error("Couldn't update save");
+        }
     };
 
     // ============================================================
@@ -645,12 +796,17 @@ export default function VideoLibrary() {
     // ============================================================
     const selectVideo = async (video) => {
         setCurrentVideo(video);
-        loadRelatedVideos(video, videos);
         navigate(`/videos/${video.course_id}`, { replace: true });
 
-        // Register view
         try {
             await api.post(`/courses/${video.course_id}/view`);
+        } catch (error) {
+            // Silently fail
+        }
+
+        try {
+            await api.post(`/courses/${video.course_id}/watch`);
+            if (libraryView === "recent") loadRecentlyWatched();
         } catch (error) {
             // Silently fail
         }
@@ -659,7 +815,16 @@ export default function VideoLibrary() {
     // ============================================================
     // Filter & Search
     // ============================================================
-    const filteredVideos = videos.filter(video => {
+    const librarySource =
+        libraryView === "recent"
+            ? recentlyWatched
+            : libraryView === "liked"
+                ? likedVideos
+                : libraryView === "saved"
+                    ? savedVideos
+                    : videos;
+
+    const filteredVideos = librarySource.filter(video => {
         const matchesSearch = video.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
             video.subject?.toLowerCase().includes(searchQuery.toLowerCase()) ||
             video.teacher_name?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -670,9 +835,8 @@ export default function VideoLibrary() {
 
     const currentEmbedUrl = currentVideo ? getYouTubeEmbedUrl(currentVideo.video_url) : null;
     const isYouTubeVideo = Boolean(currentEmbedUrl);
-    // In stacked layout the player sits pinned at roughly half the viewport height,
-    // with the full video list scrollable underneath it.
     const playerWrapperClass = layoutMode === "stacked" ? "max-h-[50vh] mx-auto" : "";
+    const activeTabLabel = LIBRARY_TABS.find((t) => t.id === libraryView)?.label || "Up next";
 
     // ============================================================
     // Render
@@ -692,7 +856,6 @@ export default function VideoLibrary() {
                 ============================================================ */}
             <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur">
                 <div className="flex items-center justify-between px-4 h-14">
-                    {/* Left: Logo + Menu */}
                     <div className="flex items-center gap-4">
                         <button
                             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -712,7 +875,6 @@ export default function VideoLibrary() {
                         </div>
                     </div>
 
-                    {/* Center: Search */}
                     <div className="flex-1 max-w-2xl mx-4 hidden md:flex">
                         <div className="relative w-full">
                             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -725,7 +887,6 @@ export default function VideoLibrary() {
                         </div>
                     </div>
 
-                    {/* Right: Actions */}
                     <div className="flex items-center gap-2">
                         <button className="p-2 hover:bg-secondary rounded-full transition-colors hidden sm:flex">
                             <Settings className="h-5 w-5" />
@@ -739,7 +900,6 @@ export default function VideoLibrary() {
                     </div>
                 </div>
 
-                {/* Mobile Search */}
                 <div className="px-4 pb-2 md:hidden">
                     <div className="relative w-full">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -750,6 +910,10 @@ export default function VideoLibrary() {
                             className="pl-9 h-10 rounded-full bg-secondary border-0 focus-visible:ring-1"
                         />
                     </div>
+                </div>
+
+                <div className="px-4 pb-3">
+                    <LibraryTabs active={libraryView} onChange={setLibraryView} />
                 </div>
             </header>
 
@@ -802,18 +966,12 @@ export default function VideoLibrary() {
             )}
 
             {/* ============================================================
-                MAIN CONTENT (YouTube style two-column layout)
+                MAIN CONTENT
                 ============================================================ */}
             <div className={layoutMode === "sidebar" ? "flex" : "max-w-5xl mx-auto"}>
-                {/* Left: Video Player + Details */}
                 <div className={layoutMode === "sidebar" ? "flex-1 p-4 lg:p-6 max-w-5xl" : "p-4 lg:p-6"}>
                     {currentVideo ? (
                         <>
-                            {/* Video Player.
-                                YouTube links get the real, native YouTube iframe (its own
-                                play/seek/volume/captions/quality/speed/fullscreen/PiP controls).
-                                Everything else (mp4, webm, ogg, mov...) gets a custom player
-                                built to look and behave the same way. */}
                             {isYouTubeVideo ? (
                                 <div className={`relative aspect-video bg-black rounded-xl overflow-hidden ${playerWrapperClass}`}>
                                     <iframe
@@ -843,7 +1001,6 @@ export default function VideoLibrary() {
                                 </div>
                             )}
 
-                            {/* Video Info */}
                             <div className="mt-4">
                                 <h1 className="text-xl font-display font-bold">{currentVideo.title}</h1>
                                 <div className="flex flex-wrap items-center justify-between gap-4 mt-2">
@@ -862,14 +1019,18 @@ export default function VideoLibrary() {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <button
-                                            onClick={() => setIsLiked(!isLiked)}
+                                            onClick={handleToggleLike}
                                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${isLiked ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-secondary"
                                                 }`}
                                         >
-                                            <ThumbsUp className="h-4 w-4" />
-                                            <span className="text-sm">12</span>
+                                            <ThumbsUp className={`h-4 w-4 ${isLiked ? "fill-current" : ""}`} />
+                                            <span className="text-sm">{currentVideo.likes ?? 0}</span>
                                         </button>
-                                        <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border hover:bg-secondary transition-colors">
+                                        <button
+                                            disabled
+                                            title="Coming soon"
+                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border opacity-50 cursor-not-allowed"
+                                        >
                                             <ThumbsDown className="h-4 w-4" />
                                         </button>
                                         <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border hover:bg-secondary transition-colors">
@@ -877,7 +1038,7 @@ export default function VideoLibrary() {
                                             <span className="text-sm hidden sm:inline">Share</span>
                                         </button>
                                         <button
-                                            onClick={() => setIsSaved(!isSaved)}
+                                            onClick={handleToggleSave}
                                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-colors ${isSaved ? "border-primary bg-primary/10 text-primary" : "border-border hover:bg-secondary"
                                                 }`}
                                         >
@@ -895,7 +1056,6 @@ export default function VideoLibrary() {
                                     </div>
                                 </div>
 
-                                {/* Description */}
                                 <div className="mt-4 p-4 rounded-xl bg-secondary/50">
                                     <p className="text-sm leading-relaxed">{currentVideo.description || "No description available."}</p>
                                     <div className="flex flex-wrap gap-2 mt-3">
@@ -918,12 +1078,20 @@ export default function VideoLibrary() {
                     )}
                 </div>
 
-                {/* Right: Sidebar - Video List (sidebar layout only) */}
+                {/* Sidebar */}
                 {layoutMode === "sidebar" && (
                     <div className="w-full lg:w-[420px] p-4 border-l border-border hidden lg:block">
                         <div className="flex items-center justify-between mb-4">
-                            <h3 className="font-semibold text-sm">Up next</h3>
+                            <h3 className="font-semibold text-sm">{activeTabLabel}</h3>
                             <div className="flex items-center gap-2">
+                                {libraryView === "recent" && recentlyWatched.length > 0 && (
+                                    <button
+                                        onClick={handleClearRecentlyWatched}
+                                        className="text-xs text-muted-foreground hover:text-destructive transition-colors mr-1"
+                                    >
+                                        Clear all
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => setViewMode("grid")}
                                     className={`p-1.5 rounded ${viewMode === "grid" ? "bg-secondary" : ""}`}
@@ -939,7 +1107,6 @@ export default function VideoLibrary() {
                             </div>
                         </div>
 
-                        {/* Filters */}
                         <div className="flex flex-wrap gap-2 mb-4">
                             <select
                                 value={filterLevel}
@@ -963,35 +1130,36 @@ export default function VideoLibrary() {
                             </select>
                         </div>
 
-                        {/* Video List */}
-                        <div className={`space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2 scrollbar-thin ${viewMode === "grid" ? "grid grid-cols-2 gap-2" : ""}`}>
-                            {filteredVideos.length > 0 ? (
-                                filteredVideos.map(video => (
-                                    <div
-                                        key={video.course_id}
-                                        onClick={() => selectVideo(video)}
-                                        className={`cursor-pointer rounded-lg overflow-hidden transition-all ${currentVideo?.course_id === video.course_id
-                                            ? "ring-2 ring-primary"
-                                            : "hover:bg-secondary/50"
-                                            } ${viewMode === "grid" ? "aspect-video" : "flex gap-3 p-2"}`}
-                                    >
-                                        {viewMode === "grid" ? (
-                                            <div className="relative w-full h-full bg-secondary">
-                                                {video.thumbnail && (
-                                                    <img
-                                                        src={video.thumbnail}
-                                                        alt={video.title}
-                                                        className="w-full h-full object-cover"
-                                                    />
-                                                )}
-                                                <PlayCircle className="absolute inset-0 m-auto h-8 w-8 text-white/60" />
-                                                <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
-                                                    {video.duration || "45:00"}
-                                                </span>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div className="relative w-40 shrink-0 aspect-video bg-secondary rounded overflow-hidden">
+                        {tabLoading ? (
+                            <div className="flex items-center justify-center py-12">
+                                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                            </div>
+                        ) : (
+                            <div className={`space-y-2 max-h-[calc(100vh-260px)] overflow-y-auto pr-2 scrollbar-thin ${viewMode === "grid" ? "grid grid-cols-2 gap-2" : ""}`}>
+                                {filteredVideos.length > 0 ? (
+                                    filteredVideos.map(video => (
+                                        <div
+                                            key={video.course_id}
+                                            onClick={() => selectVideo(video)}
+                                            className={`group relative cursor-pointer rounded-lg overflow-hidden transition-all ${currentVideo?.course_id === video.course_id
+                                                ? "ring-2 ring-primary"
+                                                : "hover:bg-secondary/50"
+                                                } ${viewMode === "grid" ? "aspect-video" : "flex gap-3 p-2"}`}
+                                        >
+                                            {libraryView === "recent" && (
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleRemoveRecentlyWatched(video);
+                                                    }}
+                                                    title="Remove from history"
+                                                    className="absolute top-1 right-1 z-10 p-1 rounded-full bg-black/70 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/90"
+                                                >
+                                                    <Trash2 className="h-3 w-3" />
+                                                </button>
+                                            )}
+                                            {viewMode === "grid" ? (
+                                                <div className="relative w-full h-full bg-secondary">
                                                     {video.thumbnail && (
                                                         <img
                                                             src={video.thumbnail}
@@ -999,40 +1167,67 @@ export default function VideoLibrary() {
                                                             className="w-full h-full object-cover"
                                                         />
                                                     )}
-                                                    <PlayCircle className="absolute inset-0 m-auto h-6 w-6 text-white/50" />
+                                                    <PlayCircle className="absolute inset-0 m-auto h-8 w-8 text-white/60" />
                                                     <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
                                                         {video.duration || "45:00"}
                                                     </span>
                                                 </div>
-                                                <div className="flex-1 min-w-0">
-                                                    <p className="font-medium text-sm line-clamp-2">{video.title}</p>
-                                                    <p className="text-xs text-muted-foreground truncate mt-1">{video.teacher_name || "Unknown"}</p>
-                                                    <p className="text-xs text-muted-foreground">
-                                                        {video.views || 0} views
-                                                    </p>
-                                                </div>
-                                            </>
-                                        )}
+                                            ) : (
+                                                <>
+                                                    <div className="relative w-40 shrink-0 aspect-video bg-secondary rounded overflow-hidden">
+                                                        {video.thumbnail && (
+                                                            <img
+                                                                src={video.thumbnail}
+                                                                alt={video.title}
+                                                                className="w-full h-full object-cover"
+                                                            />
+                                                        )}
+                                                        <PlayCircle className="absolute inset-0 m-auto h-6 w-6 text-white/50" />
+                                                        <span className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1.5 py-0.5 rounded">
+                                                            {video.duration || "45:00"}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="font-medium text-sm line-clamp-2">{video.title}</p>
+                                                        <p className="text-xs text-muted-foreground truncate mt-1">{video.teacher_name || "Unknown"}</p>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            {video.views || 0} views
+                                                        </p>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="text-center py-8 text-muted-foreground">
+                                        <p className="text-sm">
+                                            {libraryView === "recent" && "You haven't watched anything yet"}
+                                            {libraryView === "liked" && "You haven't liked any videos yet"}
+                                            {libraryView === "saved" && "You haven't saved any videos yet"}
+                                            {libraryView === "browse" && "No videos found"}
+                                        </p>
                                     </div>
-                                ))
-                            ) : (
-                                <div className="text-center py-8 text-muted-foreground">
-                                    <p className="text-sm">No videos found</p>
-                                </div>
-                            )}
-                        </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
 
-            {/* ============================================================
-                STACKED LAYOUT: full video grid below the player
-                ============================================================ */}
+            {/* Stacked layout */}
             {layoutMode === "stacked" && (
                 <div className="max-w-6xl mx-auto p-4 lg:p-6">
                     <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                        <h3 className="font-semibold text-sm">All videos</h3>
-                        <div className="flex flex-wrap gap-2">
+                        <h3 className="font-semibold text-sm">{activeTabLabel}</h3>
+                        <div className="flex flex-wrap items-center gap-2">
+                            {libraryView === "recent" && recentlyWatched.length > 0 && (
+                                <button
+                                    onClick={handleClearRecentlyWatched}
+                                    className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                                >
+                                    Clear all
+                                </button>
+                            )}
                             <select
                                 value={filterLevel}
                                 onChange={(e) => setFilterLevel(e.target.value)}
@@ -1056,32 +1251,41 @@ export default function VideoLibrary() {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                        {filteredVideos.length > 0 ? (
-                            filteredVideos.map(video => (
-                                <VideoCard
-                                    key={video.course_id}
-                                    video={video}
-                                    onClick={selectVideo}
-                                    isActive={currentVideo?.course_id === video.course_id}
-                                />
-                            ))
-                        ) : (
-                            <div className="col-span-full text-center py-8 text-muted-foreground">
-                                <p className="text-sm">No videos found</p>
-                            </div>
-                        )}
-                    </div>
+                    {tabLoading ? (
+                        <div className="flex items-center justify-center py-16">
+                            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {filteredVideos.length > 0 ? (
+                                filteredVideos.map(video => (
+                                    <VideoCard
+                                        key={video.course_id}
+                                        video={video}
+                                        onClick={selectVideo}
+                                        isActive={currentVideo?.course_id === video.course_id}
+                                        onRemove={libraryView === "recent" ? handleRemoveRecentlyWatched : undefined}
+                                    />
+                                ))
+                            ) : (
+                                <div className="col-span-full text-center py-8 text-muted-foreground">
+                                    <p className="text-sm">
+                                        {libraryView === "recent" && "You haven't watched anything yet"}
+                                        {libraryView === "liked" && "You haven't liked any videos yet"}
+                                        {libraryView === "saved" && "You haven't saved any videos yet"}
+                                        {libraryView === "browse" && "No videos found"}
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
-            {/* ============================================================
-                MOBILE: Horizontal scroll for related videos (sidebar layout only —
-                stacked layout already shows every video in the grid above)
-                ============================================================ */}
+            {/* Mobile horizontal scroll */}
             {layoutMode === "sidebar" && (
                 <div className="lg:hidden p-4 border-t border-border">
-                    <h3 className="font-semibold text-sm mb-3">Related videos</h3>
+                    <h3 className="font-semibold text-sm mb-3">{activeTabLabel}</h3>
                     <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
                         {filteredVideos.slice(0, 10).map(video => (
                             <div
