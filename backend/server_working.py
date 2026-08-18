@@ -1922,6 +1922,47 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
     resp = await chat.send_message(f"Solve this exam question step by step:\n\n{req.question}")
     return {"answer": resp}
 
+
+
+
+# ============================================================
+# Reading Time Tracking
+# ============================================================
+
+class ReadingTimeRequest(BaseModel):
+    seconds: int  # delta seconds since last heartbeat
+
+@api_router.post("/papers/{paper_id}/reading-time")
+async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict = Depends(get_current_user)):
+    # Clamp to guard against a stalled tab sending a huge delta after resume
+    seconds = max(0, min(req.seconds, 120))
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    await db.paper_reading_time.update_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]},
+        {
+            "$inc": {"total_seconds": seconds},
+            "$set": {"last_updated": now_iso},
+            "$setOnInsert": {
+                "record_id": f"rt_{uuid.uuid4().hex[:12]}",
+                "paper_id": paper_id,
+                "user_id": user["user_id"],
+                "created_at": now_iso,
+            },
+        },
+        upsert=True,
+    )
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"ok": True, "total_seconds": doc.get("total_seconds", 0) if doc else seconds}
+
+@api_router.get("/papers/{paper_id}/reading-time")
+async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"total_seconds": (doc or {}).get("total_seconds", 0)}
 # ============================================================
 # Drafts
 # ============================================================

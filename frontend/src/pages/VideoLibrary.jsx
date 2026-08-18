@@ -497,7 +497,7 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "", onWatc
 
                     {activeSources.length > 1 && (
                         <div className="relative">
-                            <button
+                            {/* <button
                                 onClick={() => {
                                     setShowQualityMenu((v) => !v);
                                     setShowSpeedMenu(false);
@@ -506,7 +506,7 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "", onWatc
                                 title="Quality"
                             >
                                 <Settings className="h-4.5 w-4.5" />
-                            </button>
+                            </button> */}
                             {showQualityMenu && (
                                 <div className="absolute bottom-8 right-0 bg-black/90 rounded-lg py-1.5 min-w-[100px] shadow-xl">
                                     {activeSources.map((s, idx) => (
@@ -969,9 +969,9 @@ export default function VideoLibrary() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        <button className="p-2 hover:bg-secondary rounded-full transition-colors hidden sm:flex">
+                        {/* <button className="p-2 hover:bg-secondary rounded-full transition-colors hidden sm:flex">
                             <Settings className="h-5 w-5" />
-                        </button>
+                        </button> */}
                         <button
                             onClick={() => navigate("/")}
                             className="p-2 hover:bg-secondary rounded-full transition-colors"
