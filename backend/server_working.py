@@ -417,6 +417,31 @@ class EmailSignupRequest(BaseModel):
     password: str
 
 # ============================================================
+# Settings Models
+# ============================================================
+
+DEFAULT_SETTINGS = {
+    "autoplay_next": True,
+    "default_playback_speed": 1.0,
+    "default_video_quality": "auto",
+    "captions_enabled": False,
+    "notifications_enabled": True,
+    "email_notifications": True,
+    "theme": "system",       # "light" | "dark" | "system"
+    "language": "en",
+}
+
+class SettingsUpdate(BaseModel):
+    autoplay_next: Optional[bool] = None
+    default_playback_speed: Optional[float] = None
+    default_video_quality: Optional[str] = None
+    captions_enabled: Optional[bool] = None
+    notifications_enabled: Optional[bool] = None
+    email_notifications: Optional[bool] = None
+    theme: Optional[str] = None
+    language: Optional[str] = None
+
+# ============================================================
 # Auth Helpers
 # ============================================================
 
@@ -966,6 +991,32 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
     return fresh
 
 # ============================================================
+# User Settings
+# ============================================================
+# Stored as a nested "settings" object on the user document.
+# GET always returns the full settings shape (defaults merged with
+# whatever the user has actually saved), so the frontend never has
+# to guess about missing keys.
+
+@api_router.get("/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    stored = user.get("settings") or {}
+    return {**DEFAULT_SETTINGS, **stored}
+
+@api_router.put("/settings")
+async def update_settings(payload: SettingsUpdate, user: dict = Depends(get_current_user)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    current = user.get("settings") or {}
+    merged = {**DEFAULT_SETTINGS, **current, **updates}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": merged}})
+    return merged
+
+@api_router.post("/settings/reset")
+async def reset_settings(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": DEFAULT_SETTINGS}})
+    return dict(DEFAULT_SETTINGS)
+
+# ============================================================
 # Exam Structure
 # ============================================================
 
@@ -1362,7 +1413,7 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
         "video_url": req.video_url,
         "thumbnail": req.thumbnail or "",
         "price": req.price, "duration": req.duration,
-        "views": 0, "earnings": 0, "students": 0,
+        "views": 0, "earnings": 0, "students": 0, "likes": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.courses.insert_one(dict(course))
@@ -1373,6 +1424,22 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
 async def list_courses(mine: bool = False, user: dict = Depends(get_current_user)):
     q = {"teacher_id": user["user_id"]} if mine else {}
     items = await db.courses.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    if items:
+        ids = [c["course_id"] for c in items]
+        likes = await db.video_likes.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        saves = await db.video_saves.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        liked_ids = {l["course_id"] for l in likes}
+        saved_ids = {s["course_id"] for s in saves}
+        for c in items:
+            c.setdefault("likes", 0)
+            c["liked"] = c["course_id"] in liked_ids
+            c["saved"] = c["course_id"] in saved_ids
+
     return items
 
 @api_router.get("/courses/{course_id}")
@@ -1380,6 +1447,9 @@ async def get_course(course_id: str, user: dict = Depends(get_current_user)):
     c = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
+    c.setdefault("likes", 0)
+    c["liked"] = bool(await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]}))
+    c["saved"] = bool(await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]}))
     return c
 
 @api_router.post("/courses/{course_id}/view")
@@ -1402,6 +1472,161 @@ async def register_view(course_id: str, user: dict = Depends(get_current_user)):
     await db.courses.update_one({"course_id": course_id},
                                 {"$inc": {"views": 1, "students": 1, "earnings": VIEW_RATE_FCFA}})
     return {"counted": True, "rate": VIEW_RATE_FCFA}
+
+# ============================================================
+# Video Interactions: Likes, Saves, Recently Watched
+# ============================================================
+# Likes and saves are per-user join records (db.video_likes /
+# db.video_saves) against a course_id, mirroring the existing
+# drafts pattern used for papers below. "likes" is also kept as a
+# running counter on the course document itself so listing videos
+# doesn't need a separate aggregate query for the total count.
+
+# ---------- Likes ----------
+
+@api_router.post("/courses/{course_id}/like")
+async def toggle_like_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_likes.delete_one({"_id": existing["_id"]})
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": -1}})
+        liked = False
+    else:
+        await db.video_likes.insert_one({
+            "like_id": f"lk_{uuid.uuid4().hex[:12]}",
+            "course_id": course_id,
+            "user_id": user["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": 1}})
+        liked = True
+
+    fresh = await db.courses.find_one({"course_id": course_id}, {"_id": 0, "likes": 1})
+    return {"liked": liked, "likes": max(0, (fresh or {}).get("likes", 0))}
+
+@api_router.get("/videos/liked")
+async def list_liked_videos(user: dict = Depends(get_current_user)):
+    likes = await db.video_likes.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not likes:
+        return []
+    ids = [l["course_id"] for l in likes]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for l in likes:
+        c = cmap.get(l["course_id"])
+        if c:
+            c = dict(c)
+            c["liked"] = True
+            c["liked_at"] = l["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Saved videos ----------
+
+@api_router.post("/courses/{course_id}/save")
+async def toggle_save_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_saves.delete_one({"_id": existing["_id"]})
+        return {"saved": False}
+
+    await db.video_saves.insert_one({
+        "save_id": f"sv_{uuid.uuid4().hex[:12]}",
+        "course_id": course_id,
+        "user_id": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"saved": True}
+
+@api_router.get("/videos/saved")
+async def list_saved_videos(user: dict = Depends(get_current_user)):
+    saves = await db.video_saves.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not saves:
+        return []
+    ids = [s["course_id"] for s in saves]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for s in saves:
+        c = cmap.get(s["course_id"])
+        if c:
+            c = dict(c)
+            c["saved"] = True
+            c["saved_at"] = s["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Recently watched ----------
+
+@api_router.post("/courses/{course_id}/watch")
+async def record_watch(course_id: str, user: dict = Depends(get_current_user)):
+    """
+    Upserts a recently-watched entry for this user/video, bumping it to
+    the top of their history on repeat views instead of creating a new
+    row each time. Call this whenever a video starts playing — separate
+    from /view, which only counts the first watch for teacher earnings.
+    """
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.watch_history.update_one(
+        {"course_id": course_id, "user_id": user["user_id"]},
+        {
+            "$set": {"watched_at": now_iso},
+            "$setOnInsert": {
+                "history_id": f"wh_{uuid.uuid4().hex[:12]}",
+                "course_id": course_id,
+                "user_id": user["user_id"],
+            },
+        },
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api_router.get("/videos/recently-watched")
+async def list_recently_watched(limit: int = 20, user: dict = Depends(get_current_user)):
+    capped_limit = max(1, min(limit, 100))
+    history = await db.watch_history.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "watched_at": 1}
+    ).sort("watched_at", -1).to_list(capped_limit)
+    if not history:
+        return []
+    ids = [h["course_id"] for h in history]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for h in history:
+        c = cmap.get(h["course_id"])
+        if c:
+            c = dict(c)
+            c["watched_at"] = h["watched_at"]
+            result.append(c)
+    return result
+
+@api_router.delete("/videos/recently-watched")
+async def clear_recently_watched(user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_many({"user_id": user["user_id"]})
+    return {"ok": True}
+
+@api_router.delete("/videos/recently-watched/{course_id}")
+async def remove_recently_watched(course_id: str, user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_one({"course_id": course_id, "user_id": user["user_id"]})
+    return {"ok": True}
 
 @api_router.get("/teacher/stats")
 async def teacher_stats(user: dict = Depends(get_current_user)):
@@ -1467,7 +1692,7 @@ async def seed_demo():
             await db.courses.insert_one({
                 "course_id": f"crs_{uuid.uuid4().hex[:12]}",
                 "teacher_id": tid, "teacher_name": teacher["name"], "teacher_picture": "",
-                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0,
+                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0, "likes": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(), **c,
             })
 

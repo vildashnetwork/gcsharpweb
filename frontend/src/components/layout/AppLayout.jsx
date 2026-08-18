@@ -14,6 +14,7 @@ const NAV = [
     { key: "study", label: "Study Center", icon: BookOpen, path: "/study" },
     { key: "ai", label: "AI Assistant", icon: Bot, path: "/ai" },
     { key: "analytics", label: "Analytics", icon: BarChart3, path: "/analytics" },
+    { key: "lesson-videos", label: "Lesson Videos", icon: BarChart3, path: "/videos" },
     { key: "teacher", label: "Teacher Portal", icon: Presentation, path: "/teacher" },
     { key: "settings", label: "Settings", icon: SettingsIcon, path: "/settings" },
 ];
