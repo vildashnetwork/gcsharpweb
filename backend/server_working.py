@@ -1247,18 +1247,124 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 
 
 
+# @api_router.get("/dashboard/stats")
+# async def dashboard_stats(user: dict = Depends(get_current_user)):
+#     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+#     questions_attempted = sum(a["total"] for a in attempts)
+#     correct = sum(a["score"] for a in attempts)
+#     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
+
+#     # Study time comes from two sources:
+#     #  1. time_spent recorded on quiz attempts
+#     #  2. active reading time recorded on paper_reading_time (PaperReader screen)
+#     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+#     reading_docs_full = await db.paper_reading_time.find(
+#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
+#     ).to_list(2000)
+#     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
+
+#     study_seconds = attempt_seconds + reading_seconds
+#     study_hours = round(study_seconds / 3600, 1)
+
+#     weak_counter, strong_counter = {}, {}
+#     for a in attempts:
+#         for t in a.get("weak_topics", []):
+#             weak_counter[t] = weak_counter.get(t, 0) + 1
+#         for t in a.get("strong_topics", []):
+#             strong_counter[t] = strong_counter.get(t, 0) + 1
+    
+    
+#     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
+#     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
+
+#     now = datetime.now(timezone.utc)
+#     week = [0] * 7
+
+#     # Attempt minutes per day
+#     for a in attempts:
+#         try:
+#             d = datetime.fromisoformat(a["created_at"])
+#             if d.tzinfo is None:
+#                 d = d.replace(tzinfo=timezone.utc)
+#             delta = (now.date() - d.date()).days
+#             if 0 <= delta < 7:
+#                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
+#         except Exception:
+#             pass
+
+    
+#     for d_doc in reading_docs_full:
+#         daily = d_doc.get("daily_seconds") or {}
+        
+#         # If daily_seconds is empty, use last_updated as fallback
+#         if not daily and d_doc.get("last_updated"):
+#             try:
+#                 d = datetime.fromisoformat(d_doc["last_updated"])
+#                 if d.tzinfo is None:
+#                     d = d.replace(tzinfo=timezone.utc)
+#                 delta = (now.date() - d.date()).days
+#                 if 0 <= delta < 7:
+#                     # Add the total_seconds to the day it was last updated
+#                     week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
+#             except Exception:
+#                 pass
+#         else:
+#             # Use daily_seconds if available
+#             for i in range(7):
+#                 day_key = (now.date() - timedelta(days=i)).isoformat()
+#                 secs = daily.get(day_key, 0)
+#                 if secs:
+#                     week[6 - i] += round(secs / 60)
+
+#     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+#     weekday_today = now.weekday()
+#     consistency = []
+#     for i in range(7):
+#         idx = (weekday_today - 6 + i) % 7
+#         consistency.append({"day": days[idx], "minutes": week[i]})
+
+#     return {
+#         "study_hours": study_hours,
+#         "study_seconds": study_seconds,
+#         "questions_attempted": questions_attempted,
+#         "accuracy": accuracy,
+#         "streak": user.get("streak", 0),
+#         "xp": user.get("xp", 0),
+#         "level": user.get("level", 1),
+#         "xp_to_next": 500 - (user.get("xp", 0) % 500),
+#         "weak_topics": weak,
+#         "strong_topics": strong,
+#         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
+#         "consistency": consistency,
+#         "total_attempts": len(attempts),
+#     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
-    questions_attempted = sum(a["total"] for a in attempts)
-    correct = sum(a["score"] for a in attempts)
+    questions_attempted = sum(a.get("total", 0) for a in attempts)
+    correct = sum(a.get("score", 0) for a in attempts)
     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
 
-    # Study time comes from two sources:
-    #  1. time_spent recorded on quiz attempts
-    #  2. active reading time recorded on paper_reading_time (PaperReader screen)
+    # Study time from attempts
     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
 
+    # Get reading time documents
     reading_docs_full = await db.paper_reading_time.find(
         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
     ).to_list(2000)
@@ -1267,12 +1373,14 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     study_seconds = attempt_seconds + reading_seconds
     study_hours = round(study_seconds / 3600, 1)
 
+    # Weak and strong topics
     weak_counter, strong_counter = {}, {}
     for a in attempts:
         for t in a.get("weak_topics", []):
             weak_counter[t] = weak_counter.get(t, 0) + 1
         for t in a.get("strong_topics", []):
             strong_counter[t] = strong_counter.get(t, 0) + 1
+
     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
 
@@ -1291,12 +1399,9 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         except Exception:
             pass
 
-    # ✅ FIXED: Handle reading minutes per day
-    # If daily_seconds doesn't exist, use last_updated as a fallback
+    # Reading minutes per day
     for d_doc in reading_docs_full:
         daily = d_doc.get("daily_seconds") or {}
-        
-        # If daily_seconds is empty, use last_updated as fallback
         if not daily and d_doc.get("last_updated"):
             try:
                 d = datetime.fromisoformat(d_doc["last_updated"])
@@ -1304,12 +1409,10 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
                     d = d.replace(tzinfo=timezone.utc)
                 delta = (now.date() - d.date()).days
                 if 0 <= delta < 7:
-                    # Add the total_seconds to the day it was last updated
                     week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
             except Exception:
                 pass
         else:
-            # Use daily_seconds if available
             for i in range(7):
                 day_key = (now.date() - timedelta(days=i)).isoformat()
                 secs = daily.get(day_key, 0)
@@ -1322,6 +1425,9 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     for i in range(7):
         idx = (weekday_today - 6 + i) % 7
         consistency.append({"day": days[idx], "minutes": week[i]})
+
+    # ✅ Count total reading time documents (papers viewed)
+    total_papers_viewed = len(reading_docs_full)
 
     return {
         "study_hours": study_hours,
@@ -1336,10 +1442,9 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "strong_topics": strong,
         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
         "consistency": consistency,
-        "total_attempts": len(attempts),
+        "total_attempts": len(attempts),  # Number of quiz attempts
+        "total_papers_viewed": len(reading_docs_full),  # ✅ Number of papers viewed (reading time documents)
     }
-
-
 # ============================================================
 # Leaderboard
 # ============================================================
