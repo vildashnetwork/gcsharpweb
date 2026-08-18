@@ -1158,13 +1158,85 @@ async def list_attempts(user: dict = Depends(get_current_user)):
     items = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
+# @api_router.get("/dashboard/stats")
+# async def dashboard_stats(user: dict = Depends(get_current_user)):
+#     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
+#     questions_attempted = sum(a["total"] for a in attempts)
+#     correct = sum(a["score"] for a in attempts)
+#     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
+#     study_seconds = sum(a.get("time_spent", 0) for a in attempts)
+#     study_hours = round(study_seconds / 3600, 1)
+
+#     weak_counter, strong_counter = {}, {}
+#     for a in attempts:
+#         for t in a.get("weak_topics", []):
+#             weak_counter[t] = weak_counter.get(t, 0) + 1
+#         for t in a.get("strong_topics", []):
+#             strong_counter[t] = strong_counter.get(t, 0) + 1
+#     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
+#     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
+
+#     now = datetime.now(timezone.utc)
+#     week = [0] * 7
+#     for a in attempts:
+#         try:
+#             d = datetime.fromisoformat(a["created_at"])
+#             if d.tzinfo is None:
+#                 d = d.replace(tzinfo=timezone.utc)
+#             delta = (now.date() - d.date()).days
+#             if 0 <= delta < 7:
+#                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
+#         except Exception:
+#             pass
+#     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+#     weekday_today = now.weekday()
+#     consistency = []
+#     for i in range(7):
+#         idx = (weekday_today - 6 + i) % 7
+#         consistency.append({"day": days[idx], "minutes": week[i]})
+
+#     return {
+#         "study_hours": study_hours,
+#         "questions_attempted": questions_attempted,
+#         "accuracy": accuracy,
+#         "streak": user.get("streak", 0),
+#         "xp": user.get("xp", 0),
+#         "level": user.get("level", 1),
+#         "xp_to_next": 500 - (user.get("xp", 0) % 500),
+#         "weak_topics": weak,
+#         "strong_topics": strong,
+#         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
+#         "consistency": consistency,
+#         "total_attempts": len(attempts),
+#     }
+
+
+
+
+
+
+
+
+
+
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
     questions_attempted = sum(a["total"] for a in attempts)
     correct = sum(a["score"] for a in attempts)
     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
-    study_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    # Study time now comes from two sources:
+    #  1. time_spent recorded on quiz attempts
+    #  2. active reading time recorded on paper_reading_time (PaperReader screen)
+    attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    reading_docs = await db.paper_reading_time.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1}
+    ).to_list(2000)
+    reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs)
+
+    study_seconds = attempt_seconds + reading_seconds
     study_hours = round(study_seconds / 3600, 1)
 
     weak_counter, strong_counter = {}, {}
@@ -1178,6 +1250,8 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 
     now = datetime.now(timezone.utc)
     week = [0] * 7
+
+    # Attempt minutes per day
     for a in attempts:
         try:
             d = datetime.fromisoformat(a["created_at"])
@@ -1188,6 +1262,25 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
         except Exception:
             pass
+
+    # Reading minutes per day (from last_updated on each paper's reading-time doc)
+    for d_doc in reading_docs:
+        pass  # total_seconds only; per-day breakdown handled below via a dedicated query
+
+    reading_docs_full = await db.paper_reading_time.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "last_updated": 1}
+    ).to_list(2000)
+    for d_doc in reading_docs_full:
+        try:
+            d = datetime.fromisoformat(d_doc["last_updated"])
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            delta = (now.date() - d.date()).days
+            if 0 <= delta < 7:
+                week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
+        except Exception:
+            pass
+
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_today = now.weekday()
     consistency = []
@@ -1209,7 +1302,6 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "consistency": consistency,
         "total_attempts": len(attempts),
     }
-
 # ============================================================
 # Leaderboard
 # ============================================================
