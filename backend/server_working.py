@@ -1443,11 +1443,68 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
         "consistency": consistency,
         "total_attempts": len(attempts),  # Number of quiz attempts
-        "total_papers_viewed": len(reading_docs_full),  # ✅ Number of papers viewed (reading time documents)
+        "total_papers_viewed": len(reading_docs_full),  
     }
 # ============================================================
 # Leaderboard
 # ============================================================
+
+
+
+
+
+
+
+
+
+# ============================================================
+# AI Tutor - Additional Endpoints
+# ============================================================
+
+@api_router.put("/ai/sessions/{session_id}/title")
+async def update_session_title(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Update the title of a chat session"""
+    try:
+        body = await request.json()
+        title = body.get("title", "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        return {"ok": True, "title": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update session title error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/ai/sessions/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
+    """Delete a chat session"""
+    try:
+        result = await db.ai_sessions.delete_one(
+            {"session_id": session_id, "user_id": user["user_id"]}
+        )
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
+
 
 @api_router.get("/leaderboard")
 async def leaderboard(user: dict = Depends(get_current_user)):

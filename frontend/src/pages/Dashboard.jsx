@@ -372,7 +372,7 @@ export default function Dashboard() {
                 {stats ? (
                     <>
                         <StatCard testid="stat-study-hours" icon={Clock} label="Study Time" value={formatStudyTime(stats.study_seconds)} accent="bg-accent text-primary" />
-                        <StatCard testid="stat-questions" icon={Target} label="Questions Attempted" value={stats.questions_attempted} accent="bg-success/15 text-success" />
+                        <StatCard testid="stat-questions" icon={Target} label="Questions Attempted" value={stats.total_papers_viewed} accent="bg-success/15 text-success" />
                         <StatCard testid="stat-accuracy" icon={TrendingUp} label="Accuracy" value={`${stats.accuracy}%`} accent="bg-primary/15 text-primary" />
                         <StatCard testid="stat-streak" icon={Flame} label="Day Streak" value={stats.streak} accent="bg-warning/15 text-warning" />
                     </>
@@ -470,13 +470,13 @@ export default function Dashboard() {
             <div>
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-display font-semibold">Lesson Videos for You</h2>
-                    <button onClick={() => navigate("/study")} className="text-sm text-primary flex items-center gap-1 hover:underline">
+                    <button onClick={() => navigate("/videos")} className="text-sm text-primary flex items-center gap-1 hover:underline">
                         View all <ArrowRight className="h-4 w-4" />
                     </button>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {courses.length ? courses.map((c) => (
-                        <button key={c.course_id} onClick={() => navigate("/study")} data-testid={`course-card-${c.course_id}`}
+                        <button key={c.course_id} onClick={() => navigate(`/videos/${c.course_id}`)} data-testid={`course-card-${c.course_id}`}
                             className="text-left rounded-xl border border-border bg-card overflow-hidden hover:-translate-y-0.5 transition-transform group">
                             <div className="h-28 bg-secondary relative">
                                 {c.thumbnail && <img src={c.thumbnail} alt={c.title} className="h-full w-full object-cover" />}
