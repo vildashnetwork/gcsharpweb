@@ -841,6 +841,107 @@ async def process_session(request: Request, response: Response):
 
 
 
+
+
+
+
+
+# Add this new endpoint after your existing auth routes
+@api_router.post("/auth/exchange-session")
+async def exchange_session(request: Request, response: Response):
+    """Exchange OAuth session_id for user session with token"""
+    try:
+        body = await request.json()
+        session_id = body.get("sessionId")
+        
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Missing session_id")
+        
+        logger.info(f"Exchanging session: {session_id}")
+        
+        # Fetch session data from auth service
+        async with httpx.AsyncClient() as hc:
+            r = await hc.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": session_id},
+            )
+        
+        if r.status_code != 200:
+            raise HTTPException(status_code=401, detail="Auth failed")
+        
+        data = r.json()
+        email = data.get("email")
+        
+        if not email:
+            raise HTTPException(status_code=400, detail="No email in session data")
+        
+        # Find or create user
+        existing = await db.users.find_one({"email": email})
+        
+        if existing:
+            user = existing
+            # Remove sensitive fields
+            user.pop("_id", None)
+            user.pop("password", None)
+        else:
+            user_id = f"user_{uuid.uuid4().hex[:12]}"
+            user = {
+                "user_id": user_id,
+                "email": email,
+                "name": data.get("name", ""),
+                "picture": data.get("picture", ""),
+                "phone": None,
+                "role": None,
+                "onboarded": False,
+                "bio": "",
+                "institution": "",
+                "exam_level": "",
+                "study_year": None,
+                "subjects": [],
+                "goals": [],
+                "daily_commitment": "",
+                "proficiency": "",
+                "learning_style": "",
+                "specialization": "",
+                "xp": 0,
+                "level": 1,
+                "streak": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.users.insert_one(dict(user))
+            user.pop("_id", None)
+            user.pop("password", None)
+        
+        # Create session token
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+        
+        # ✅ Return both user and session_token
+        return {
+            "user": user,
+            "session_token": session_token
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Exchange session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.get("/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):
     user.pop("_id", None)
