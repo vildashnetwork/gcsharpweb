@@ -18,6 +18,10 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
+
+from twilio.rest import Client as TwilioClient
+from twilio.base.exceptions import TwilioRestException
+
 # ============================================================
 # Configuration & Environment
 # ============================================================
@@ -34,6 +38,29 @@ CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
 APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
 APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
 
+
+
+
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
+TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID') 
+
+
+
+
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    try:
+        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info(" Twilio client initialized successfully")
+    except Exception as e:
+        logger.error(f" Failed to initialize Twilio client: {e}")
+else:
+    logger.warning("" \
+    " Twilio credentials not configured - SMS sending will be disabled")
+
+
 # Initialize MongoDB
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -43,7 +70,7 @@ db = client[DB_NAME]
 # ============================================================
 
 app = FastAPI(
-    title="GCSMART API",
+    title="GCSHARP API",
     version="2.1.0",
     description="AI-Powered Educational Platform for Cameroon Students",
     docs_url="/docs",
@@ -77,6 +104,72 @@ DEFAULT_MODEL_CHAIN = [
     "openai/gpt-oss-20b:free",
     "openrouter/free",
 ]
+
+
+
+
+
+
+
+def send_sms_via_twilio(to_number: str, message: str) -> dict:
+    """
+    Send SMS using Twilio
+    Returns: {'success': bool, 'sid': str, 'error': str}
+    """
+    if not twilio_client:
+        return {
+            'success': False,
+            'error': 'Twilio client not initialized. Check your credentials.'
+        }
+    
+    if not TWILIO_PHONE_NUMBER and not TWILIO_MESSAGING_SERVICE_SID:
+        return {
+            'success': False,
+            'error': 'No sending phone number or messaging service configured.'
+        }
+    
+    try:
+        # Format the phone number with country code
+        if not to_number.startswith('+'):
+            to_number = '+' + to_number
+        
+        logger.info(f"📱 Sending SMS to: {to_number}")
+        
+        # Send SMS using messaging service or direct phone number
+        if TWILIO_MESSAGING_SERVICE_SID:
+            message = twilio_client.messages.create(
+                body=message,
+                messaging_service_sid=TWILIO_MESSAGING_SERVICE_SID,
+                to=to_number
+            )
+        else:
+            message = twilio_client.messages.create(
+                body=message,
+                from_=TWILIO_PHONE_NUMBER,
+                to=to_number
+            )
+        
+        logger.info(f" SMS sent successfully. SID: {message.sid}")
+        return {
+            'success': True,
+            'sid': message.sid,
+            'status': message.status
+        }
+    except TwilioRestException as e:
+        logger.error(f" Twilio error: {e}")
+        return {
+            'success': False,
+            'error': f"Twilio error: {e.msg}",
+            'code': e.code
+        }
+    except Exception as e:
+        logger.error(f" Failed to send SMS: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
 
 
 def _sanitize_model_id(raw: str) -> str:
@@ -380,7 +473,7 @@ async def get_current_user(request: Request):
 
 @api_router.post("/auth/phone/send-otp")
 async def send_phone_otp(req: PhoneLoginRequest):
-    """Send OTP to phone number"""
+    """Send OTP to phone number via Twilio"""
     try:
         # Generate 6-digit OTP
         otp_code = ''.join([str(uuid.uuid4().int % 10) for _ in range(6)])
@@ -396,20 +489,54 @@ async def send_phone_otp(req: PhoneLoginRequest):
             "verified": False
         })
         
-        # In production, send SMS here using Twilio, AfricasTalking, etc.
-        # For now, log the OTP for testing
-        logger.info(f"OTP for {req.country_code}{req.phone}: {otp_code}")
+        # Format the full phone number
+        full_number = f"{req.country_code}{req.phone}"
         
-        # Return success (don't return OTP in production!)
-        return {
-            "success": True, 
-            "message": "OTP sent successfully",
-            "otp": otp_code,  # Remove this in production!
-            "expires_in": 300
-        }
+        # Create SMS message
+        sms_message = f"Your GCSHARP verification code is: {otp_code}. Valid for 5 minutes."
+        
+        # Send SMS via Twilio
+        result = send_sms_via_twilio(full_number, sms_message)
+        
+        if result['success']:
+            logger.info(f"✅ OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
+            return {
+                "success": True,
+                "message": "Verification code sent via SMS",
+                "expires_in": 300
+            }
+        else:
+            # Log the error
+            logger.error(f"❌ SMS failed for {full_number}: {result.get('error')}")
+            
+            # Check if we're in development mode
+            env = os.environ.get("ENVIRONMENT", "development")
+            
+            if env == "development":
+                # In development, return OTP for testing
+                logger.info(f"📱 Development mode: OTP for {full_number} is {otp_code}")
+                return {
+                    "success": True,
+                    "message": "OTP generated (development mode - SMS not sent)",
+                    "otp": otp_code,  # Only return in development!
+                    "expires_in": 300,
+                    "warning": "SMS not sent - Twilio error: " + result.get('error', 'Unknown error')
+                }
+            else:
+                # In production, don't return OTP
+                return {
+                    "success": False,
+                    "message": "Failed to send verification code. Please try again.",
+                    "error": "SMS delivery failed"
+                }
     except Exception as e:
-        logger.error(f"Send OTP error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send OTP")
+        logger.error(f"❌ Send OTP error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send verification code")
+
+
+
+
+
 
 @api_router.post("/auth/phone/verify")
 async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
@@ -424,7 +551,7 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
         })
         
         if not otp_record:
-            raise HTTPException(status_code=401, detail="Invalid OTP")
+            raise HTTPException(status_code=401, detail="Invalid verification code")
         
         # Check expiration
         expires_at = otp_record["expires_at"]
@@ -434,7 +561,7 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         
         if expires_at < datetime.now(timezone.utc):
-            raise HTTPException(status_code=401, detail="OTP expired")
+            raise HTTPException(status_code=401, detail="Verification code expired")
         
         # Mark OTP as verified
         await db.phone_otps.update_one(
@@ -500,9 +627,8 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Verify OTP error: {e}")
+        logger.error(f"❌ Verify OTP error: {e}")
         raise HTTPException(status_code=500, detail="Verification failed")
-
 # ---------- EMAIL AUTH ----------
 
 @api_router.post("/auth/email/register")

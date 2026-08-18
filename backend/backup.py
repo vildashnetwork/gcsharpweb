@@ -314,6 +314,28 @@ class SolveRequest(BaseModel):
     subject: Optional[str] = None
 
 # ============================================================
+# NEW: Phone & Email Login Models
+# ============================================================
+
+class PhoneLoginRequest(BaseModel):
+    phone: str
+    country_code: str = "+237"
+
+class PhoneVerifyRequest(BaseModel):
+    phone: str
+    country_code: str = "+237"
+    otp: str
+
+class EmailLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class EmailSignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+# ============================================================
 # Auth Helpers
 # ============================================================
 
@@ -351,8 +373,228 @@ async def get_current_user(request: Request):
     return user
 
 # ============================================================
-# Authentication Routes
+# NEW: Phone & Email Authentication Routes
 # ============================================================
+
+# ---------- PHONE AUTH ----------
+
+@api_router.post("/auth/phone/send-otp")
+async def send_phone_otp(req: PhoneLoginRequest):
+    """Send OTP to phone number"""
+    try:
+        # Generate 6-digit OTP
+        otp_code = ''.join([str(uuid.uuid4().int % 10) for _ in range(6)])
+        
+        # Store OTP in database with expiration (5 minutes)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        await db.phone_otps.insert_one({
+            "phone": req.phone,
+            "country_code": req.country_code,
+            "otp": otp_code,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "verified": False
+        })
+        
+        # In production, send SMS here using Twilio, AfricasTalking, etc.
+        # For now, log the OTP for testing
+        logger.info(f"OTP for {req.country_code}{req.phone}: {otp_code}")
+        
+        # Return success (don't return OTP in production!)
+        return {
+            "success": True, 
+            "message": "OTP sent successfully",
+            "otp": otp_code,  # Remove this in production!
+            "expires_in": 300
+        }
+    except Exception as e:
+        logger.error(f"Send OTP error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send OTP")
+
+@api_router.post("/auth/phone/verify")
+async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
+    """Verify OTP and login/register user"""
+    try:
+        # Find valid OTP
+        otp_record = await db.phone_otps.find_one({
+            "phone": req.phone,
+            "country_code": req.country_code,
+            "otp": req.otp,
+            "verified": False
+        })
+        
+        if not otp_record:
+            raise HTTPException(status_code=401, detail="Invalid OTP")
+        
+        # Check expiration
+        expires_at = otp_record["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="OTP expired")
+        
+        # Mark OTP as verified
+        await db.phone_otps.update_one(
+            {"_id": otp_record["_id"]},
+            {"$set": {"verified": True}}
+        )
+        
+        # Find or create user
+        phone_full = f"{req.country_code}{req.phone}"
+        user = await db.users.find_one({"phone": phone_full}, {"_id": 0})
+        
+        if not user:
+            # Create new user
+            user_id = f"user_{uuid.uuid4().hex[:12]}"
+            user = {
+                "user_id": user_id,
+                "phone": phone_full,
+                "email": f"user_{uuid.uuid4().hex[:8]}@gcsmart.temp",
+                "name": f"User {phone_full[-4:]}",
+                "role": None,
+                "onboarded": False,
+                "bio": "",
+                "institution": "",
+                "exam_level": "",
+                "study_year": None,
+                "subjects": [],
+                "goals": [],
+                "daily_commitment": "",
+                "proficiency": "",
+                "learning_style": "",
+                "specialization": "",
+                "xp": 0,
+                "level": 1,
+                "streak": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.users.insert_one(dict(user))
+        
+        # Create session
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+        
+        user.pop("_id", None)
+        user.pop("password", None)
+        return {
+            "success": True, 
+            "user": user,
+            "session_token": session_token
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Verify OTP error: {e}")
+        raise HTTPException(status_code=500, detail="Verification failed")
+
+# ---------- EMAIL AUTH ----------
+
+@api_router.post("/auth/email/register")
+async def email_register(req: EmailSignupRequest):
+    """Register with email and password"""
+    try:
+        # Check if email exists
+        existing = await db.users.find_one({"email": req.email})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Create user
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        user = {
+            "user_id": user_id,
+            "email": req.email,
+            "name": req.name,
+            "password": req.password,  # In production, hash this!
+            "phone": None,
+            "role": None,
+            "onboarded": False,
+            "bio": "",
+            "institution": "",
+            "exam_level": "",
+            "study_year": None,
+            "subjects": [],
+            "goals": [],
+            "daily_commitment": "",
+            "proficiency": "",
+            "learning_style": "",
+            "specialization": "",
+            "xp": 0,
+            "level": 1,
+            "streak": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(dict(user))
+        
+        user.pop("_id", None)
+        user.pop("password", None)  # Don't return password
+        
+        return {"success": True, "user": user}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email register error: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@api_router.post("/auth/email/login")
+async def email_login(req: EmailLoginRequest, response: Response):
+    """Login with email and password"""
+    try:
+        user = await db.users.find_one({"email": req.email}, {"_id": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # In production, use proper password hashing!
+        if user.get("password") != req.password:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        
+        # Create session
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+        
+        user.pop("_id", None)
+        user.pop("password", None)  # Don't return password
+        
+        return {
+            "success": True, 
+            "user": user,
+            "session_token": session_token
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email login error: {e}")
+        raise HTTPException(status_code=500, detail="Login failed")
+
+# ---------- EXISTING AUTH ROUTES (modified to support phone) ----------
 
 @api_router.post("/auth/register")
 async def register_user(req: RegisterRequest):
@@ -366,6 +608,7 @@ async def register_user(req: RegisterRequest):
         "email": req.email,
         "name": req.name,
         "password": req.password,
+        "phone": None,
         "role": "student",
         "onboarded": False,
         "bio": "",
@@ -385,6 +628,7 @@ async def register_user(req: RegisterRequest):
     }
     await db.users.insert_one(user)
     user.pop("_id", None)
+    user.pop("password", None)
     return {"success": True, "user": user}
 
 @api_router.post("/auth/login")
@@ -411,6 +655,7 @@ async def login_user(req: LoginRequest, response: Response):
         max_age=7 * 24 * 60 * 60,
     )
     user.pop("_id", None)
+    user.pop("password", None)
     return {"success": True, "user": user, "session_token": session_token}
 
 @api_router.post("/auth/session")
@@ -439,6 +684,7 @@ async def process_session(request: Request, response: Response):
             "email": email,
             "name": data.get("name", ""),
             "picture": data.get("picture", ""),
+            "phone": None,
             "role": None,
             "onboarded": False,
             "bio": "",
@@ -473,11 +719,13 @@ async def process_session(request: Request, response: Response):
         max_age=7 * 24 * 60 * 60,
     )
     user.pop("_id", None)
+    user.pop("password", None)
     return user
 
 @api_router.get("/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):
     user.pop("_id", None)
+    user.pop("password", None)
     return user
 
 @api_router.post("/auth/logout")
@@ -494,6 +742,7 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    fresh.pop("password", None)
     return fresh
 
 # ============================================================

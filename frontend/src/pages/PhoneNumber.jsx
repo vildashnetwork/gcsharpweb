@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "@/context/ThemeContext";
 import { useAuth } from "@/context/AuthContext";
+import api from "@/lib/api"; // Import the API client
 
 const COUNTRIES = [
     { code: "+237", label: "Cameroon", flag: "🇨🇲" },
@@ -67,7 +68,6 @@ function stepFromType(type) {
 }
 
 export default function PhoneSignIn() {
-
     const { user } = useAuth();
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
@@ -84,19 +84,21 @@ export default function PhoneSignIn() {
     const [loading, setLoading] = useState(false);
     const [googleLoading, setGoogleLoading] = useState(false);
     const [resendIn, setResendIn] = useState(30);
+    const [otpError, setOtpError] = useState("");
+    const [phoneError, setPhoneError] = useState("");
     const otpRefs = useRef([]);
-
-    useEffect(() => {
-        if (user) {
-            window.location.href = "/dashboard"
-        }
-    }, [user]);
 
     const { loginWithGoogle, signInWithEmail, signUpWithEmail } = useAuth() || {};
 
     const phoneDigits = phone.replace(/\D/g, "");
     const canContinue = phoneDigits.length >= 8;
     const otpComplete = otp.every((d) => d !== "");
+
+    useEffect(() => {
+        if (user) {
+            window.location.href = "/dashboard";
+        }
+    }, [user]);
 
     // Set step with URL sync
     const setStep = (next) => {
@@ -115,30 +117,17 @@ export default function PhoneSignIn() {
     // Exchange session function
     const exchangeSession = async (sessionId) => {
         try {
-            const response = await fetch("https://gcsharpweb.onrender.com/api/auth/exchange-session", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ sessionId }),
-                credentials: "include",
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                if (data.user) {
-                    // Store user data properly
-                    localStorage.setItem("user", JSON.stringify({
-                        ...data.user,
-                        token: data.token || data.accessToken
-                    }));
+            const response = await api.post("/auth/exchange-session", { sessionId });
+            if (response.data?.user) {
+                const userData = {
+                    ...response.data.user,
+                    token: response.data.token || response.data.accessToken,
+                };
+                localStorage.setItem("user", JSON.stringify(userData));
+                if (response.data.session_token) {
+                    localStorage.setItem("session_token", response.data.session_token);
                 }
-                // Redirect to dashboard
                 window.location.href = "/dashboard";
-            } else {
-                console.error("Session exchange failed");
-                setAuthChecked(true);
-                setIsLoading(false);
             }
         } catch (error) {
             console.error("Error exchanging session:", error);
@@ -147,18 +136,15 @@ export default function PhoneSignIn() {
         }
     };
 
-    // Handle Google Login with direct redirect
+    // Handle Google Login
     const handleGoogleLogin = async () => {
         if (googleLoading) return;
         setGoogleLoading(true);
 
         try {
-            // First try using auth context
             if (loginWithGoogle) {
                 await loginWithGoogle();
             } else {
-                // Fallback: direct OAuth redirect
-                // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
                 const redirectUrl = window.location.origin + "/dashboard";
                 window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
             }
@@ -168,34 +154,21 @@ export default function PhoneSignIn() {
         }
     };
 
-    //  CORRECTED: Auth check effect
+    // Auth check effect
     useEffect(() => {
         const checkAuthStatus = async () => {
             try {
-                //  1. Check for ACTUAL user data, NOT PostHog cookie
+                // Check for user data in localStorage
                 const userData = localStorage.getItem("user");
-
                 if (userData) {
                     try {
                         const user = JSON.parse(userData);
-
-                        //  2. Verify with backend
-                        const response = await fetch("https://gcsharpweb.onrender.com/api/auth/verify", {
-                            method: "GET",
-                            credentials: "include",
-                            headers: user.token ? {
-                                "Authorization": `Bearer ${user.token}`
-                            } : {}
+                        const response = await api.get("/auth/me", {
+                            headers: user.token ? { Authorization: `Bearer ${user.token}` } : {},
                         });
-
-                        if (response.ok) {
-                            // User is authenticated - redirect to dashboard
+                        if (response.status === 200) {
                             window.location.href = "/dashboard";
                             return;
-                        } else {
-                            // Token expired or invalid
-                            console.log("Session expired, clearing local data");
-                            localStorage.removeItem("user");
                         }
                     } catch (e) {
                         console.error("Error parsing user data:", e);
@@ -203,7 +176,7 @@ export default function PhoneSignIn() {
                     }
                 }
 
-                //  3. Handle OAuth callback from URL
+                // Handle OAuth callback
                 const params = new URLSearchParams(window.location.search);
                 const sessionId = params.get("session_id");
                 const hash = window.location.hash;
@@ -221,26 +194,21 @@ export default function PhoneSignIn() {
                     }
                 }
 
-                //  4. Check for session cookie (if using server-side sessions)
+                // Check for session cookie
                 try {
-                    const sessionResponse = await fetch("https://gcsharpweb.onrender.com/api/auth/session", {
-                        credentials: "include",
-                    });
-
-                    if (sessionResponse.ok) {
-                        const sessionData = await sessionResponse.json();
-                        if (sessionData.user) {
-                            localStorage.setItem("user", JSON.stringify(sessionData.user));
-                            window.location.href = "/dashboard";
-                            return;
+                    const sessionResponse = await api.get("/auth/session");
+                    if (sessionResponse.data?.user) {
+                        localStorage.setItem("user", JSON.stringify(sessionResponse.data.user));
+                        if (sessionResponse.data.session_token) {
+                            localStorage.setItem("session_token", sessionResponse.data.session_token);
                         }
+                        window.location.href = "/dashboard";
+                        return;
                     }
                 } catch (e) {
-                    // No active session - this is fine
                     console.log("No active session found");
                 }
 
-                //  5. User is not authenticated - show sign-in page
                 setAuthChecked(true);
                 setIsLoading(false);
             } catch (error) {
@@ -275,17 +243,107 @@ export default function PhoneSignIn() {
         );
     }
 
-    const handleSendCode = () => {
+    // Handle sending OTP
+    const handleSendCode = async () => {
         if (!canContinue || loading) return;
         setLoading(true);
-        // Placeholder: call your backend / Firebase phone auth here.
-        setTimeout(() => {
+        setPhoneError("");
+        setOtpError("");
+
+        try {
+            const response = await api.post("/auth/phone/send-otp", {
+                phone: phoneDigits,
+                country_code: country.code,
+            });
+
+            if (response.data?.success) {
+                setStep("otp");
+                setResendIn(30);
+                setOtp(["", "", "", "", "", ""]);
+                setTimeout(() => otpRefs.current[0]?.focus(), 100);
+            } else {
+                setPhoneError(response.data?.message || "Failed to send OTP. Please try again.");
+            }
+        } catch (error) {
+            console.error("Send OTP error:", error);
+            setPhoneError(error.response?.data?.detail || "Failed to send OTP. Please try again.");
+        } finally {
             setLoading(false);
-            setStep("otp");
-            setResendIn(30);
-            setOtp(["", "", "", "", "", ""]);
-            requestAnimationFrame(() => otpRefs.current[0]?.focus());
-        }, 900);
+        }
+    };
+
+    // Handle OTP verification
+    const handleVerify = async () => {
+        if (!otpComplete || loading) return;
+        setLoading(true);
+        setOtpError("");
+
+        try {
+            const otpCode = otp.join("");
+            const response = await api.post("/auth/phone/verify", {
+                phone: phoneDigits,
+                country_code: country.code,
+                otp: otpCode,
+            });
+
+            if (response.data?.success) {
+                const userData = {
+                    ...response.data.user,
+                    token: response.data.session_token,
+                };
+                localStorage.setItem("user", JSON.stringify(userData));
+                if (response.data.session_token) {
+                    localStorage.setItem("session_token", response.data.session_token);
+                }
+                window.location.href = "/dashboard";
+            } else {
+                setOtpError(response.data?.message || "Invalid OTP. Please try again.");
+            }
+        } catch (error) {
+            console.error("Verify OTP error:", error);
+            setOtpError(error.response?.data?.detail || "Invalid OTP. Please try again.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // Handle email auth
+    const handleEmailAuth = async ({ mode, name, email, password }) => {
+        if (loading) return;
+        setLoading(true);
+
+        try {
+            let response;
+            if (mode === "signup") {
+                response = await api.post("/auth/email/register", {
+                    name,
+                    email,
+                    password,
+                });
+            } else {
+                response = await api.post("/auth/email/login", {
+                    email,
+                    password,
+                });
+            }
+
+            if (response.data?.success) {
+                const userData = {
+                    ...response.data.user,
+                    token: response.data.session_token,
+                };
+                localStorage.setItem("user", JSON.stringify(userData));
+                if (response.data.session_token) {
+                    localStorage.setItem("session_token", response.data.session_token);
+                }
+                window.location.href = "/dashboard";
+            }
+        } catch (error) {
+            console.error("Email auth error:", error);
+            alert(error.response?.data?.detail || "Authentication failed. Please try again.");
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleOtpChange = (i, val) => {
@@ -312,24 +370,20 @@ export default function PhoneSignIn() {
         otpRefs.current[Math.min(text.length, 5)]?.focus();
     };
 
-    const handleVerify = () => {
-        if (!otpComplete || loading) return;
-        setLoading(true);
-        // Placeholder: verify code with your backend here.
-        setTimeout(() => setLoading(false), 900);
-    };
-
-    const handleEmailAuth = async ({ mode, name, email, password }) => {
-        if (loading) return;
-        setLoading(true);
+    const handleResendOtp = async () => {
+        if (resendIn > 0) return;
         try {
-            if (mode === "signup") {
-                await signUpWithEmail?.({ name, email, password });
-            } else {
-                await signInWithEmail?.({ email, password });
+            const response = await api.post("/auth/phone/send-otp", {
+                phone: phoneDigits,
+                country_code: country.code,
+            });
+            if (response.data?.success) {
+                setResendIn(30);
+                setOtpError("");
             }
-        } finally {
-            setLoading(false);
+        } catch (error) {
+            console.error("Resend OTP error:", error);
+            setOtpError("Failed to resend OTP. Please try again.");
         }
     };
 
@@ -389,6 +443,7 @@ export default function PhoneSignIn() {
                                 googleLoading={googleLoading}
                                 onGoogleLogin={handleGoogleLogin}
                                 onUseEmail={() => setStep("email")}
+                                phoneError={phoneError}
                             />
                         )}
                         {step === "otp" && (
@@ -405,9 +460,8 @@ export default function PhoneSignIn() {
                                 onVerify={handleVerify}
                                 onBack={() => setStep("phone")}
                                 resendIn={resendIn}
-                                onResend={() => {
-                                    setResendIn(30);
-                                }}
+                                onResend={handleResendOtp}
+                                otpError={otpError}
                             />
                         )}
                         {step === "email" && (
@@ -447,6 +501,7 @@ function PhoneStep({
     googleLoading,
     onGoogleLogin,
     onUseEmail,
+    phoneError,
 }) {
     const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -520,6 +575,9 @@ function PhoneStep({
                     className="h-12 flex-1 min-w-0 rounded-xl border border-slate-200 dark:border-white/20 bg-slate-50 dark:bg-white/5 px-4 text-base placeholder:text-slate-400 dark:placeholder:text-white/30 focus:outline-none focus:border-slate-400 dark:focus:border-white/60 transition-colors"
                 />
             </div>
+            {phoneError && (
+                <p className="text-xs text-red-500 mb-3">{phoneError}</p>
+            )}
 
             <button
                 type="button"
@@ -564,6 +622,7 @@ function OtpStep({
     onBack,
     resendIn,
     onResend,
+    otpError,
 }) {
     return (
         <div>
@@ -608,6 +667,10 @@ function OtpStep({
                     </span>
                 )}
             </div>
+
+            {otpError && (
+                <p className="text-xs text-red-500 text-center mt-1 mb-2">{otpError}</p>
+            )}
 
             <div className="mt-5 mb-6 text-center text-xs text-slate-400 dark:text-white/40">
                 {resendIn > 0 ? (
