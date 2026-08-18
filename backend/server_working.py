@@ -1288,8 +1288,9 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         idx = (weekday_today - 6 + i) % 7
         consistency.append({"day": days[idx], "minutes": week[i]})
 
-    return {
+        return {
         "study_hours": study_hours,
+        "study_seconds": study_seconds,
         "questions_attempted": questions_attempted,
         "accuracy": accuracy,
         "streak": user.get("streak", 0),
