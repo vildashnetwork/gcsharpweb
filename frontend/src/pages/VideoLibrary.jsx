@@ -92,10 +92,11 @@ function formatTime(seconds) {
 // ============================================================
 const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
-function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
+function CustomVideoPlayer({ src, sources, poster, title, className = "", onWatch = () => { } }) {
     const containerRef = useRef(null);
     const videoElRef = useRef(null);
     const hideTimerRef = useRef(null);
+    const watchTimeoutRef = useRef(null);
 
     const [playing, setPlaying] = useState(false);
     const [loading, setLoading] = useState(true);
@@ -115,6 +116,50 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
     const [activeSourceIdx, setActiveSourceIdx] = useState(0);
     const [showQualityMenu, setShowQualityMenu] = useState(false);
 
+    // Track watch time - mark as watched after 30 seconds
+    const handleWatch = useCallback(() => {
+        if (watchTimeoutRef.current) return;
+        watchTimeoutRef.current = setTimeout(() => {
+            onWatch();
+            watchTimeoutRef.current = null;
+        }, 30000); // 30 seconds
+    }, [onWatch]);
+
+    // ✅ FIXED: Wrapped in useCallback
+    const togglePlay = useCallback(() => {
+        const el = videoElRef.current;
+        if (!el) return;
+        if (el.paused) {
+            el.play();
+            handleWatch();
+        } else {
+            el.pause();
+            if (watchTimeoutRef.current) {
+                clearTimeout(watchTimeoutRef.current);
+                watchTimeoutRef.current = null;
+            }
+        }
+    }, [handleWatch]);
+
+    // ✅ FIXED: Wrapped in useCallback
+    const skip = useCallback((seconds) => {
+        const el = videoElRef.current;
+        if (!el) return;
+        el.currentTime = Math.min(Math.max(0, el.currentTime + seconds), el.duration || Infinity);
+        // If skipping forward and not playing, start watching timer
+        if (seconds > 0 && el.paused) {
+            handleWatch();
+        }
+    }, [handleWatch]);
+
+    // ✅ FIXED: Wrapped in useCallback
+    const toggleFullscreen = useCallback(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        if (document.fullscreenElement) document.exitFullscreen();
+        else container.requestFullscreen?.();
+    }, []);
+
     useEffect(() => {
         setPlaying(false);
         setLoading(true);
@@ -122,6 +167,10 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         setDuration(0);
         setBuffered(0);
         setActiveSourceIdx(0);
+        if (watchTimeoutRef.current) {
+            clearTimeout(watchTimeoutRef.current);
+            watchTimeoutRef.current = null;
+        }
     }, [src]);
 
     useEffect(() => {
@@ -135,8 +184,17 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
                 setBuffered(el.buffered.end(el.buffered.length - 1));
             }
         };
-        const onPlay = () => setPlaying(true);
-        const onPause = () => setPlaying(false);
+        const onPlay = () => {
+            setPlaying(true);
+            handleWatch();
+        };
+        const onPause = () => {
+            setPlaying(false);
+            if (watchTimeoutRef.current) {
+                clearTimeout(watchTimeoutRef.current);
+                watchTimeoutRef.current = null;
+            }
+        };
         const onWaiting = () => setLoading(true);
         const onCanPlay = () => setLoading(false);
         const onVolumeChange = () => {
@@ -168,8 +226,12 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
             el.removeEventListener("volumechange", onVolumeChange);
             el.removeEventListener("enterpictureinpicture", onEnterPip);
             el.removeEventListener("leavepictureinpicture", onLeavePip);
+            if (watchTimeoutRef.current) {
+                clearTimeout(watchTimeoutRef.current);
+                watchTimeoutRef.current = null;
+            }
         };
-    }, [activeSourceIdx, src]);
+    }, [activeSourceIdx, src, handleWatch]);
 
     useEffect(() => {
         const onFsChange = () => setFullscreen(document.fullscreenElement === containerRef.current);
@@ -177,16 +239,18 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         return () => document.removeEventListener("fullscreenchange", onFsChange);
     }, []);
 
-    const scheduleHide = () => {
+    const scheduleHide = useCallback(() => {
         clearTimeout(hideTimerRef.current);
         hideTimerRef.current = setTimeout(() => {
             if (playing) setShowControls(false);
         }, 2500);
-    };
-    const wake = () => {
+    }, [playing]);
+
+    const wake = useCallback(() => {
         setShowControls(true);
         scheduleHide();
-    };
+    }, [scheduleHide]);
+
     useEffect(() => {
         if (!playing) {
             setShowControls(true);
@@ -194,8 +258,9 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         } else {
             scheduleHide();
         }
-    }, [playing]);
+    }, [playing, scheduleHide]);
 
+    // ✅ FIXED: Added togglePlay to dependency array
     useEffect(() => {
         const onKeyDown = (e) => {
             if (!containerRef.current?.contains(document.activeElement) && document.activeElement !== document.body) return;
@@ -233,20 +298,7 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
         };
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, []);
-
-    const togglePlay = () => {
-        const el = videoElRef.current;
-        if (!el) return;
-        if (el.paused) el.play();
-        else el.pause();
-    };
-
-    const skip = (seconds) => {
-        const el = videoElRef.current;
-        if (!el) return;
-        el.currentTime = Math.min(Math.max(0, el.currentTime + seconds), el.duration || Infinity);
-    };
+    }, [togglePlay, toggleFullscreen]);
 
     const onScrub = (e) => {
         const el = videoElRef.current;
@@ -292,13 +344,6 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "" }) {
             fresh.currentTime = time;
             if (wasPlaying) fresh.play();
         });
-    };
-
-    const toggleFullscreen = () => {
-        const container = containerRef.current;
-        if (!container) return;
-        if (document.fullscreenElement) document.exitFullscreen();
-        else container.requestFullscreen?.();
     };
 
     const togglePip = async () => {
@@ -670,12 +715,15 @@ export default function VideoLibrary() {
         loadVideos();
     }, [loadVideos]);
 
+    // ============================================================
+    // Track current video state - ✅ FIXED with proper dependency
+    // ============================================================
     useEffect(() => {
         if (currentVideo) {
             setIsLiked(!!currentVideo.liked);
             setIsSaved(!!currentVideo.saved);
         }
-    }, [currentVideo?.course_id, currentVideo?.liked, currentVideo?.saved]);
+    }, [currentVideo]);
 
     // ============================================================
     // Library tabs
@@ -693,7 +741,6 @@ export default function VideoLibrary() {
             setRecentlyWatched(data || []);
         } catch (error) {
             console.error("Failed to load recently watched:", error);
-            toast.error("Couldn't load your recently watched videos");
         } finally {
             setTabLoading(false);
         }
@@ -706,7 +753,6 @@ export default function VideoLibrary() {
             setLikedVideos(data || []);
         } catch (error) {
             console.error("Failed to load liked videos:", error);
-            toast.error("Couldn't load your liked videos");
         } finally {
             setTabLoading(false);
         }
@@ -719,7 +765,6 @@ export default function VideoLibrary() {
             setSavedVideos(data || []);
         } catch (error) {
             console.error("Failed to load saved videos:", error);
-            toast.error("Couldn't load your saved videos");
         } finally {
             setTabLoading(false);
         }
@@ -742,7 +787,6 @@ export default function VideoLibrary() {
             setRecentlyWatched((prev) => prev.filter((v) => v.course_id !== video.course_id));
         } catch (error) {
             console.error("Failed to remove from watch history:", error);
-            toast.error("Couldn't remove that video from your history");
         }
     };
 
@@ -792,21 +836,36 @@ export default function VideoLibrary() {
     };
 
     // ============================================================
-    // Video Selection
+    // ✅ FIXED: Video Selection with immediate watch history update
     // ============================================================
     const selectVideo = async (video) => {
         setCurrentVideo(video);
         navigate(`/videos/${video.course_id}`, { replace: true });
 
+        // Register the view (counts once per student, drives teacher earnings)
         try {
             await api.post(`/courses/${video.course_id}/view`);
         } catch (error) {
             // Silently fail
         }
 
+        // ✅ Immediately add to recently watched
+        const watchedVideo = {
+            ...video,
+            watched_at: new Date().toISOString()
+        };
+
+        // Update recently watched list immediately
+        setRecentlyWatched(prev => {
+            // Remove if already exists
+            const filtered = prev.filter(v => v.course_id !== video.course_id);
+            // Add to front
+            return [watchedVideo, ...filtered];
+        });
+
+        // Also update in background via API
         try {
             await api.post(`/courses/${video.course_id}/watch`);
-            if (libraryView === "recent") loadRecentlyWatched();
         } catch (error) {
             // Silently fail
         }
@@ -837,6 +896,28 @@ export default function VideoLibrary() {
     const isYouTubeVideo = Boolean(currentEmbedUrl);
     const playerWrapperClass = layoutMode === "stacked" ? "max-h-[50vh] mx-auto" : "";
     const activeTabLabel = LIBRARY_TABS.find((t) => t.id === libraryView)?.label || "Up next";
+
+    // Handle watch callback from CustomVideoPlayer
+    const handleVideoWatch = useCallback(async () => {
+        if (!currentVideo) return;
+
+        // Update recently watched immediately
+        const watchedVideo = {
+            ...currentVideo,
+            watched_at: new Date().toISOString()
+        };
+
+        setRecentlyWatched(prev => {
+            const filtered = prev.filter(v => v.course_id !== currentVideo.course_id);
+            return [watchedVideo, ...filtered];
+        });
+
+        try {
+            await api.post(`/courses/${currentVideo.course_id}/watch`);
+        } catch (error) {
+            // Silently fail
+        }
+    }, [currentVideo]);
 
     // ============================================================
     // Render
@@ -993,6 +1074,7 @@ export default function VideoLibrary() {
                                     poster={currentVideo.thumbnail}
                                     title={currentVideo.title}
                                     className={playerWrapperClass}
+                                    onWatch={handleVideoWatch}
                                 />
                             ) : (
                                 <div className={`relative aspect-video bg-black rounded-xl overflow-hidden flex flex-col items-center justify-center text-slate-400 gap-2 ${playerWrapperClass}`}>
@@ -1001,6 +1083,7 @@ export default function VideoLibrary() {
                                 </div>
                             )}
 
+                            {/* Video Info */}
                             <div className="mt-4">
                                 <h1 className="text-xl font-display font-bold">{currentVideo.title}</h1>
                                 <div className="flex flex-wrap items-center justify-between gap-4 mt-2">
