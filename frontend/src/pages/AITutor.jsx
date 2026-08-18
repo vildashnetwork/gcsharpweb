@@ -253,7 +253,6 @@
 
 
 
-
 // pages/AITutor.tsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API } from "../lib/api";
@@ -291,6 +290,7 @@ export default function AITutor() {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     const [loadingSessions, setLoadingSessions] = useState(true);
     const [isNewChat, setIsNewChat] = useState(true);
+    const [titleGenerated, setTitleGenerated] = useState(false);
     const scrollRef = useRef(null);
     const abortRef = useRef(null);
     const sidebarRef = useRef(null);
@@ -325,32 +325,71 @@ export default function AITutor() {
         return () => abortRef.current?.abort();
     }, []);
 
-    // Auto-generate title from first message
-    const generateTitle = useCallback(async (message) => {
+    // Generate title using a separate API call
+    const generateTitle = useCallback(async (sessionId, message) => {
         try {
-            const res = await fetch(`${API}/ai/chat`, {
-                method: "POST",
+            // Use a simple approach: take first few words or use AI
+            const words = message.split(" ");
+            let title = words.slice(0, 5).join(" ");
+            if (title.length > 40) title = title.slice(0, 40) + "...";
+            if (title.length < 3) title = "New Chat";
+
+            // Try to get a better title from AI
+            try {
+                const res = await fetch(`${API}/ai/chat`, {
+                    method: "POST",
+                    credentials: "include",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        message: `Generate a very short title (3-5 words, no quotes) for this conversation: "${message}"`,
+                        subject: "General",
+                        session_id: null,
+                    }),
+                });
+                if (res.ok) {
+                    const reader = res.body?.getReader();
+                    const decoder = new TextDecoder();
+                    let responseText = "";
+                    while (reader) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        responseText += decoder.decode(value, { stream: true });
+                    }
+                    // Extract the response from SSE format
+                    const lines = responseText.split("\n");
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            try {
+                                const data = JSON.parse(line.replace("data: ", ""));
+                                if (data.delta) {
+                                    title = data.delta.trim().replace(/["']/g, "");
+                                    if (title.length > 40) title = title.slice(0, 40) + "...";
+                                    break;
+                                }
+                            } catch { }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.log("AI title generation failed, using fallback");
+            }
+
+            // Update the session title in the database
+            await fetch(`${API}/ai/sessions/${sessionId}/title`, {
+                method: "PUT",
                 credentials: "include",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    message: `Generate a very short title (max 5 words) for this conversation: "${message}"`,
-                    subject: "General",
-                    session_id: null,
-                }),
+                body: JSON.stringify({ title }),
             });
-            if (res.ok) {
-                const reader = res.body?.getReader();
-                const decoder = new TextDecoder();
-                let title = "";
-                while (reader) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    title += decoder.decode(value, { stream: true });
-                }
-                return title.replace(/^data: /, "").trim() || message.slice(0, 30);
-            }
-            return message.slice(0, 30);
-        } catch {
+
+            // Update sessions list
+            setSessions(prev => prev.map(s =>
+                s.session_id === sessionId ? { ...s, title } : s
+            ));
+
+            return title;
+        } catch (error) {
+            console.error("Failed to generate title:", error);
             return message.slice(0, 30);
         }
     }, []);
@@ -359,6 +398,7 @@ export default function AITutor() {
         setMessages([]);
         setCurrentSessionId(null);
         setIsNewChat(true);
+        setTitleGenerated(false);
         setInput("");
         if (window.innerWidth < 768) setSidebarOpen(false);
         inputRef.current?.focus();
@@ -374,6 +414,7 @@ export default function AITutor() {
                 setMessages(data.messages || []);
                 setCurrentSessionId(sessionId);
                 setIsNewChat(false);
+                setTitleGenerated(true);
                 if (window.innerWidth < 768) setSidebarOpen(false);
             }
         } catch (error) {
@@ -383,10 +424,17 @@ export default function AITutor() {
 
     const deleteChat = async (sessionId, e) => {
         e.stopPropagation();
-        // For now, just remove from UI since backend doesn't have delete endpoint
-        setSessions(prev => prev.filter(s => s.session_id !== sessionId));
-        if (currentSessionId === sessionId) {
-            createNewChat();
+        try {
+            await fetch(`${API}/ai/sessions/${sessionId}`, {
+                method: "DELETE",
+                credentials: "include",
+            });
+            setSessions(prev => prev.filter(s => s.session_id !== sessionId));
+            if (currentSessionId === sessionId) {
+                createNewChat();
+            }
+        } catch (error) {
+            console.error("Failed to delete chat:", error);
         }
     };
 
@@ -421,11 +469,6 @@ export default function AITutor() {
         const msg = text ?? input;
         if (!msg.trim() || streaming) return;
         setInput("");
-
-        // If new chat, generate title after first response
-        if (isNewChat) {
-            // Generate title in background after getting response
-        }
 
         setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
         setStreaming(true);
@@ -496,20 +539,16 @@ export default function AITutor() {
 
             if (!receivedAnything) {
                 setLastAssistantMessage("I didn't get a response that time. Please try asking again.");
+                return;
             }
 
             // Auto-generate title for new chat
-            if (isNewChat && newSessionId && messages.length <= 2) {
-                const title = await generateTitle(msg);
-                // Update session list with new title
-                setSessions(prev => [
-                    { session_id: newSessionId, title: title, updated_at: new Date().toISOString(), subject: subject },
-                    ...prev
-                ]);
+            if (isNewChat && newSessionId && !titleGenerated) {
+                setTitleGenerated(true);
+                await generateTitle(newSessionId, msg);
+                // Reload sessions to get updated list
+                await loadSessions();
             }
-
-            // Reload sessions to get updated list
-            loadSessions();
 
         } catch (err) {
             if (err?.name === "AbortError") {

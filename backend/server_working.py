@@ -1506,6 +1506,37 @@ async def delete_session(session_id: str, user: dict = Depends(get_current_user)
 
 
 
+
+
+
+@api_router.put("/ai/sessions/{session_id}/title")
+async def update_session_title(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    try:
+        body = await request.json()
+        title = body.get("title", "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        return {"ok": True, "title": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update session title error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+
 @api_router.get("/leaderboard")
 async def leaderboard(user: dict = Depends(get_current_user)):
     users = await db.users.find({"role": "student"}, {"_id": 0, "name": 1, "picture": 1, "xp": 1, "level": 1, "user_id": 1}).to_list(500)
