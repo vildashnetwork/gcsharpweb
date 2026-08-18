@@ -16,6 +16,7 @@ import AITutor from "@/pages/AITutor";
 import Analytics from "@/pages/Analytics";
 import TeacherPortal from "@/pages/TeacherPortal";
 import Settings from "@/pages/Settings";
+import PhoneSignIn from "@/pages/PhoneNumber";
 import { Loader2 } from "lucide-react";
 
 function FullLoader() {
@@ -48,6 +49,7 @@ function AppRouter() {
     return (
         <Routes>
             <Route path="/" element={<LoginGate />} />
+            <Route path="/phone-signin" element={<PhoneSignIn />} />
             <Route path="/onboarding" element={<Onboarding />} />
             <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
             <Route path="/study" element={<Protected><StudyCenter /></Protected>} />

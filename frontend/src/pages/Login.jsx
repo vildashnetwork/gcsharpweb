@@ -237,6 +237,13 @@ const HERO_IMAGES = [
 export default function Login() {
     const { theme, toggle } = useTheme();
     const [heroIndex, setHeroIndex] = useState(0);
+    const { user } = useAuth();
+    useEffect(() => {
+        if (user) {
+            window.location.href = "/dashboard";
+        }
+    }, [user]);
+
 
     useEffect(() => {
         const id = setInterval(() => {
@@ -360,6 +367,7 @@ export default function Login() {
 
                             <Button
                                 className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
+                                onClick={() => window.location.href = "/phone-signin"}
                             >
                                 <Phone className="h-4 w-4 text-slate-400" />
                                 Sign in with phone number
