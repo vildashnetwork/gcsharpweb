@@ -768,6 +768,8 @@ async def login_user(req: LoginRequest, response: Response):
     user.pop("password", None)
     return {"success": True, "user": user, "session_token": session_token}
 
+
+
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
     session_id = request.headers.get("X-Session-ID")
@@ -830,7 +832,14 @@ async def process_session(request: Request, response: Response):
     )
     user.pop("_id", None)
     user.pop("password", None)
-    return user
+    
+    # ✅ Return session_token in the response body
+    return {
+        "user": user,
+        "session_token": session_token  # Add this!
+    }
+
+
 
 @api_router.get("/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):

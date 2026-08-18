@@ -366,19 +366,19 @@ export default function Login() {
                         </p>
                         <div className="flex flex-wrap items-center gap-4">
 
-                            <Button
+                            {/* <Button
                                 className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
                                 onClick={() => window.location.href = "/phone-signin?type=phone"}
                             >
                                 <Phone className="h-4 w-4 text-slate-400" />
                                 Sign in with phone number
-                            </Button>
+                            </Button> */}
 
                             <Button
-                                className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
+                                className="h-11 px-5 text-sm font-normal bg-transparent border border-white font-bold text-white hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
                                 onClick={() => window.location.href = "/phone-signin?type=email"}
                             >
-                                <Mail className="h-4 w-4 text-slate-400" />
+                                <Mail className="h-4 w-4 text-white" />
                                 Sign in with email
                             </Button>
 
@@ -399,7 +399,7 @@ export default function Login() {
 
 
                         </div>
-                        <p className="mt-5 text-xs text-slate-400">
+                        <p className="mt-5 text-xs text-white/60 max-w-[20rem]">
                             Free to start. New here? We'll walk you through picking your exam level right after sign in.
                         </p>
                     </div>
@@ -572,13 +572,13 @@ export default function Login() {
                         </div>
 
                         {/* Secondary options */}
-                        <Button
+                        {/* <Button
                             className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
                             onClick={() => window.location.href = "/phone-signin?type=phone"}
                         >
                             <Phone className="h-5 w-5 text-slate-400" />
                             Sign in with phone number
-                        </Button>
+                        </Button> */}
 
                         <Button
                             className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
