@@ -200,6 +200,7 @@ import {
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useTheme } from "../context/ThemeContext";
+import { useAuth } from "@/context/AuthContext";
 function GoogleIcon({ className = "h-5 w-5" }) {
     return (
         <svg className={className} viewBox="0 0 24 24">
@@ -367,7 +368,7 @@ export default function Login() {
 
                             <Button
                                 className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
-                                onClick={() => window.location.href = "/phone-signin"}
+                                onClick={() => window.location.href = "/phone-signin?type=phone"}
                             >
                                 <Phone className="h-4 w-4 text-slate-400" />
                                 Sign in with phone number
@@ -375,6 +376,7 @@ export default function Login() {
 
                             <Button
                                 className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
+                                onClick={() => window.location.href = "/phone-signin?type=email"}
                             >
                                 <Mail className="h-4 w-4 text-slate-400" />
                                 Sign in with email
@@ -572,6 +574,7 @@ export default function Login() {
                         {/* Secondary options */}
                         <Button
                             className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
+                            onClick={() => window.location.href = "/phone-signin?type=phone"}
                         >
                             <Phone className="h-5 w-5 text-slate-400" />
                             Sign in with phone number
@@ -579,6 +582,7 @@ export default function Login() {
 
                         <Button
                             className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
+                            onClick={() => window.location.href = "/phone-signin?type=email"}
                         >
                             <Mail className="h-5 w-5 text-slate-400" />
                             Sign in with email

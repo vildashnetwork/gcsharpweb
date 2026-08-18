@@ -70,51 +70,16 @@ app.add_middleware(
 # ============================================================
 # LLM Client (OpenRouter, with a resilient model fallback chain)
 # ============================================================
-#
-# WHY THIS CHANGED:
-# The previous version fell back to Hugging Face's free inference API when
-# OpenRouter failed. On Render that call fails with:
-#   [Errno -5] No address associated with hostname
-# This was a DNS resolution failure for api-inference.huggingface.co, common
-# in Render's free-tier network environment. That dependency has been removed
-# entirely — OpenRouter itself now tries several models in order before
-# giving up.
-#
-# UPDATE (Aug 2026): Google, Meta, Mistral, and Qwen all pulled the free
-# (:free) tier of their flagship models from OpenRouter around mid-2026.
-# Requests to the old slugs (gemini-2.5-flash:free, llama-3.3-70b:free,
-# qwen-2.5-72b:free, mistral-7b:free) now return 404 with a message telling
-# you to switch to the paid slug. DEFAULT_MODEL_CHAIN below has been updated
-# to models that are verified free on OpenRouter as of August 2026, with
-# "openrouter/free" (OpenRouter's own auto-router across whatever is
-# currently free) as the final fallback so this keeps working even if the
-# specific named models get deprecated again later. If this happens again,
-# check https://openrouter.ai/models filtered to Price: Free before editing
-# this list — the free-model lineup rotates every few months.
 
 DEFAULT_MODEL_CHAIN = [
-    "google/gemma-4-31b-it:free",              # strong general-purpose free model, vision + tool support
-    "nvidia/nemotron-3-ultra-550b-a55b:free",  # large, high-quality, 1M context window
-    "openai/gpt-oss-20b:free",                 # OpenAI's free-tier open model
-    "openrouter/free",                         # OpenRouter's own auto-router: always resolves to
-                                                # *some* currently-working free model, so this acts
-                                                # as a self-healing last resort even if the models
-                                                # above get deprecated again in the future.
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "openai/gpt-oss-20b:free",
+    "openrouter/free",
 ]
 
 
 def _sanitize_model_id(raw: str) -> str:
-    """Defensively clean a model ID pulled from an env var. Guards against
-    two common copy-paste mistakes when setting env vars in dashboards like
-    Render's:
-      1. Pasting the whole "KEY=VALUE" line into the Value field, e.g.
-         "OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free" instead
-         of just "nvidia/nemotron-3-ultra-550b-a55b:free".
-      2. Leaving surrounding quotes in, e.g. '"nvidia/..."'.
-    Without this, a single mistyped env var silently breaks the entire
-    model chain (every call 400s with "not a valid model ID") with no
-    obvious cause in the app logs beyond the raw OpenRouter error text.
-    """
     s = raw.strip()
     m = re.match(r'^[A-Z][A-Z0-9_]*=(.+)$', s)
     if m:
@@ -130,8 +95,6 @@ def _sanitize_model_id(raw: str) -> str:
 
 
 def _get_model_chain() -> List[str]:
-    """Build the ordered list of models to try. Primary model (from env)
-    is tried first, followed by any configured fallbacks, de-duplicated."""
     primary = _sanitize_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0]))
     extra_raw = os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
     extra = [_sanitize_model_id(m) for m in extra_raw.split(",") if m.strip()]
@@ -146,9 +109,6 @@ def _get_model_chain() -> List[str]:
 
 
 class SimpleLLM:
-    """LLM client using OpenRouter, trying multiple free models in order
-    before giving up. No external fallback provider (see note above)."""
-
     def __init__(self, api_key: str = "", models: Optional[List[str]] = None):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.models = models or _get_model_chain()
@@ -159,8 +119,6 @@ class SimpleLLM:
         self.title = os.environ.get("APP_NAME", "GCSMART AI")
 
     async def _call_model(self, hc: httpx.AsyncClient, model: str, message: str) -> Optional[str]:
-        """Try a single model. Returns the text on success, None on failure
-        (caller moves on to the next model in the chain)."""
         payload = {
             "model": model,
             "messages": [
@@ -197,7 +155,6 @@ class SimpleLLM:
                 )
                 return None
 
-        # Non-200: log and let the caller try the next model
         detail = ""
         try:
             error_data = response.json()
@@ -208,8 +165,6 @@ class SimpleLLM:
         return None
 
     async def send_message(self, message: str) -> str:
-        """Try each model in self.models in order. Returns the first
-        successful response, or a friendly fallback message if all fail."""
         if not self.api_key:
             logger.error("OPENROUTER_API_KEY is not configured")
             return self._friendly_failure_message()
@@ -233,14 +188,10 @@ class SimpleLLM:
 
 
 # ============================================================
-# Local Math Solver (first line of defense, no API call needed)
+# Local Math Solver
 # ============================================================
 
 def solve_math_local(question: str) -> Optional[str]:
-    """Solve straightforward math problems locally using SymPy, without
-    calling the AI at all. Returns None if the question doesn't look like
-    something this solver can confidently handle, so callers can fall
-    through to the AI."""
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import (
@@ -248,24 +199,18 @@ def solve_math_local(question: str) -> Optional[str]:
         )
 
         q = question.lower().strip()
-
-        # Only attempt local solving if the question looks mathematical.
-        # This avoids mangling ordinary text questions (e.g. "explain force")
-        # into nonsense expressions.
         math_signal = re.search(r'[0-9]', q) and re.search(r'[+\-*/=^]|sqrt|solve|simplify|factor|derivative|integrate', q)
         if not math_signal:
             return None
 
         transformations = standard_transformations + (implicit_multiplication_application,)
-
         wants_factor = bool(re.search(r'\bfactor(ise)?\b', q))
 
-        # Strip instructional words, keep math-relevant characters
         cleaned = re.sub(r'\b(solve|find|simplify|integrate|differentiate|factor(ise)?|for|the|of|value|calculate|what\s+is)\b', ' ', q)
         allowed = re.findall(r'[0-9a-z+\-*/^=().,\s]', cleaned)
         expr_str = ''.join(allowed).strip()
         expr_str = re.sub(r'\s+', ' ', expr_str).strip()
-        expr_str = expr_str.replace('^', '**')  # sympy's parser treats ^ as XOR, not power
+        expr_str = expr_str.replace('^', '**')
 
         if not expr_str or not re.search(r'[0-9]', expr_str):
             return None
@@ -380,7 +325,6 @@ def _new_chat(session_id: str, system: str) -> SimpleLLM:
     return chat
 
 async def get_current_user(request: Request):
-    """Get current user from session token"""
     token = request.cookies.get("session_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -412,7 +356,6 @@ async def get_current_user(request: Request):
 
 @api_router.post("/auth/register")
 async def register_user(req: RegisterRequest):
-    """Register a new user"""
     existing = await db.users.find_one({"email": req.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -422,7 +365,7 @@ async def register_user(req: RegisterRequest):
         "user_id": user_id,
         "email": req.email,
         "name": req.name,
-        "password": req.password,  # TODO: hash with bcrypt/passlib before production launch
+        "password": req.password,
         "role": "student",
         "onboarded": False,
         "bio": "",
@@ -446,7 +389,6 @@ async def register_user(req: RegisterRequest):
 
 @api_router.post("/auth/login")
 async def login_user(req: LoginRequest, response: Response):
-    """Login user and create session"""
     user = await db.users.find_one({"email": req.email}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -473,7 +415,6 @@ async def login_user(req: LoginRequest, response: Response):
 
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
-    """Process OAuth session from EmergentAgent"""
     session_id = request.headers.get("X-Session-ID")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session id")
@@ -579,7 +520,6 @@ async def exam_structure():
 
 @api_router.post("/solve")
 async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current_user)):
-    """Solve math problems: local SymPy first, then AI (with model fallback chain)."""
     local_result = solve_math_local(req.question)
     if local_result:
         return {
@@ -786,7 +726,6 @@ async def ai_session_detail(session_id: str, user: dict = Depends(get_current_us
 
 @api_router.post("/ai/chat")
 async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
-    """Streaming AI chat endpoint for the AI Tutor"""
     session_id = req.session_id or f"chat_{uuid.uuid4().hex[:12]}"
     session = await db.ai_sessions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
     if not session:
@@ -833,7 +772,6 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
             for chunk in [error_msg[i:i+50] for i in range(0, len(error_msg), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
 
-        # Persist conversation
         new_messages = history + [
             {"role": "user", "content": req.message, "ts": datetime.now(timezone.utc).isoformat()},
             {"role": "assistant", "content": full, "ts": datetime.now(timezone.utc).isoformat()},
@@ -856,13 +794,6 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
 @api_router.get("/ai/health")
 async def ai_health(user: dict = Depends(get_current_user)):
-    """Diagnostic endpoint: tests each model in the fallback chain with a
-    trivial prompt and reports exactly what happened for each one. Use this
-    instead of digging through Render logs when the AI keeps returning the
-    generic 'trouble reaching the AI service' message — it will tell you
-    whether the problem is a missing/invalid key, rate limiting, or a
-    specific model being unavailable.
-    """
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     result = {
         "api_key_configured": bool(api_key),
@@ -916,21 +847,18 @@ async def ai_health(user: dict = Depends(get_current_user)):
             result["models_tested"].append(entry)
 
     if any_success:
-        result["diagnosis"] = "At least one model works. If users still see failures, it may be intermittent rate limiting — check timestamps against traffic."
+        result["diagnosis"] = "At least one model works. If users still see failures, it may be intermittent rate limiting."
     elif all(m.get("status_code") == 401 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 401 Unauthorized. The API key is invalid, expired, or was revoked. Generate a new key at openrouter.ai/keys and update it in Render's Environment settings."
+        result["diagnosis"] = "All models returned 401 Unauthorized. The API key is invalid."
     elif all(m.get("status_code") == 429 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 429 Rate Limited. Free-tier OpenRouter models share a global rate limit pool. Consider adding a paid model as a last-resort fallback, or check openrouter.ai/activity for your usage."
-    elif all(m.get("status_code") == 404 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 404. These model slugs may no longer exist on OpenRouter — check https://openrouter.ai/models for current free-tier model IDs and update DEFAULT_MODEL_CHAIN."
+        result["diagnosis"] = "All models returned 429 Rate Limited. Check openrouter.ai/activity for your usage."
     else:
-        result["diagnosis"] = "Mixed failures across models — see individual entries above for specific errors."
+        result["diagnosis"] = "Mixed failures across models — see individual entries above."
 
     return result
 
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
-    """Explain a concept using AI (local math solver first)."""
     local_result = solve_math_local(req.message)
     if local_result:
         return {"answer": local_result, "source": "local_solver"}
@@ -1041,7 +969,6 @@ async def teacher_stats(user: dict = Depends(get_current_user)):
 
 @api_router.post("/seed")
 async def seed_demo():
-    """Seed demo data for testing"""
     teacher = await db.users.find_one({"email": "demo.teacher@gcsmart.cm"}, {"_id": 0})
     if not teacher:
         tid = f"user_{uuid.uuid4().hex[:12]}"
@@ -1116,25 +1043,13 @@ def extract_pdf_text(data: bytes, max_chars: int = 9000) -> str:
     return "\n".join(parts)[:max_chars]
 
 def _clean_json(text: str):
-    """Extract a JSON object from an LLM response, robust to:
-      - markdown code fences (```json ... ```)
-      - reasoning/thinking preambles some models add before the actual
-        answer (e.g. "Okay, the user wants me to..." followed by the JSON) —
-        this became necessary once the free-tier model chain started
-        including reasoning models, which don't reliably respect
-        "return ONLY JSON" instructions.
-      - trailing commentary after the JSON object
-    Raises ValueError if no valid JSON object can be found anywhere in text.
-    """
     text = text.strip()
 
-    # 1) Try a direct parse first (the common, well-behaved case)
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # 2) Look for a fenced code block anywhere in the text, not just at the start
     fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
     if fence_match:
         try:
@@ -1142,8 +1057,6 @@ def _clean_json(text: str):
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # 3) Brace-matching: find the first '{' and its balanced closing '}',
-    # ignoring any reasoning text before or after it.
     start = text.find('{')
     if start != -1:
         depth = 0
@@ -1163,15 +1076,15 @@ def _clean_json(text: str):
     raise ValueError("Could not extract valid JSON from AI response")
 
 # ============================================================
-# Papers Module
+# Papers Module - UPDATED with better field handling
 # ============================================================
 
 @api_router.get("/papers/filters")
 async def paper_filters(user: dict = Depends(get_current_user)):
     papers = await db.papers.find({}, {"_id": 0}).to_list(1000)
-    levels = sorted({p["level"] for p in papers})
-    subjects = sorted({p["subject"] for p in papers})
-    years = sorted({p["year"] for p in papers}, reverse=True)
+    levels = sorted({p.get("level", "Unknown") for p in papers})
+    subjects = sorted({p.get("subject", "Unknown") for p in papers})
+    years = sorted({p.get("year", 0) for p in papers}, reverse=True)
     return {"levels": levels, "subjects": subjects, "years": years, "papers": [1, 2, 3]}
 
 @api_router.get("/papers")
@@ -1184,7 +1097,20 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     if year: query["year"] = year
     if paper: query["paper_number"] = paper
     if q: query["title"] = {"$regex": re.escape(q), "$options": "i"}
+    
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
+    
+    # Ensure all fields exist for frontend
+    for p in papers:
+        p.setdefault("fileSize", 0)
+        p.setdefault("originalFileSize", 0)
+        p.setdefault("fileType", "application/pdf")
+        p.setdefault("uploadedBy", None)
+        p.setdefault("uploaderName", "Anonymous")
+        p.setdefault("downloads", 0)
+        p.setdefault("description", "")
+        p.setdefault("saved", False)
+    
     drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
     saved = {d["paper_id"] for d in drafts}
     for p in papers:
@@ -1304,37 +1230,89 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
     return {"answer": resp}
 
 # ============================================================
-# Drafts
+# Drafts - UPDATED with better error handling
 # ============================================================
 
 @api_router.get("/drafts")
 async def list_drafts(user: dict = Depends(get_current_user)):
-    drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    ids = [d["paper_id"] for d in drafts]
-    papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
-    pmap = {p["paper_id"]: p for p in papers}
-    result = []
-    for d in drafts:
-        pp = pmap.get(d["paper_id"])
-        if pp:
-            pp = dict(pp); pp["saved"] = True; pp["saved_at"] = d["created_at"]
-            result.append(pp)
-    return result
+    try:
+        drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+        
+        if not drafts:
+            return []
+            
+        ids = [d["paper_id"] for d in drafts]
+        papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+        pmap = {p["paper_id"]: p for p in papers}
+        
+        result = []
+        for d in drafts:
+            pp = pmap.get(d["paper_id"])
+            if pp:
+                pp = dict(pp)
+                pp["saved"] = True
+                pp["saved_at"] = d["created_at"]
+                result.append(pp)
+            else:
+                # If paper not found, create a placeholder
+                result.append({
+                    "paper_id": d["paper_id"],
+                    "title": "Paper not found",
+                    "subject": "Unknown",
+                    "level": "Unknown",
+                    "year": 0,
+                    "paper_number": 0,
+                    "pdf_url": "",
+                    "description": "",
+                    "saved": True,
+                    "saved_at": d["created_at"]
+                })
+        return result
+    except Exception as e:
+        logger.error(f"List drafts error: {e}")
+        return []
 
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
-    existing = await db.drafts.find_one({"user_id": user["user_id"], "paper_id": req.paper_id})
-    if existing:
-        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
-        return {"saved": False}
-    await db.drafts.insert_one({"user_id": user["user_id"], "paper_id": req.paper_id,
-                                "created_at": datetime.now(timezone.utc).isoformat()})
-    return {"saved": True}
+    try:
+        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
+        
+        # Check if paper exists (optional - we allow saving even if not found)
+        paper = await db.papers.find_one({"paper_id": req.paper_id})
+        if not paper:
+            logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
+        
+        # Check existing draft
+        existing = await db.drafts.find_one({
+            "user_id": user["user_id"], 
+            "paper_id": req.paper_id
+        })
+        
+        if existing:
+            await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
+            logger.info(f"Drafts - Removed draft for {req.paper_id}")
+            return {"saved": False}
+        
+        # Save draft
+        await db.drafts.insert_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        logger.info(f"Drafts - Saved draft for {req.paper_id}")
+        return {"saved": True}
+    except Exception as e:
+        logger.error(f"Drafts error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.delete("/drafts/{paper_id}")
 async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
-    await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
-    return {"ok": True}
+    try:
+        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
 # Root Endpoints
