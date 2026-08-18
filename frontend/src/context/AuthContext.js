@@ -143,25 +143,54 @@ export function AuthProvider({ children }) {
     }, []);
 
     // Exchange OAuth session
+    // src/context/AuthContext.tsx - Updated exchangeSession
     const exchangeSession = async (sessionId) => {
         try {
+            console.log("🔄 Exchanging OAuth session...");
+            console.log("Session ID:", sessionId);
+
             const { data } = await api.post("/auth/exchange-session", { sessionId });
+
+            console.log("📦 Exchange response:", data);
+
             if (data?.user) {
-                const userData = {
-                    ...data.user,
-                    token: data.token || data.accessToken,
-                };
-                setUser(userData);
-                localStorage.setItem("user", JSON.stringify(userData));
-                if (data.session_token) {
-                    localStorage.setItem("session_token", data.session_token);
+                const userData = data.user;
+                const sessionToken = data.session_token || data.token;
+
+                // Store user data
+                if (userData) {
+                    setUser(userData);
+                    localStorage.setItem("user", JSON.stringify(userData));
+                    console.log("✅ User stored:", userData.email);
                 }
+
+                // Store session token
+                if (sessionToken) {
+                    localStorage.setItem("session_token", sessionToken);
+                    console.log("✅ Session token stored:", sessionToken.substring(0, 20) + "...");
+                } else {
+                    console.error("❌ No session_token in response!");
+                    // Try to get from cookie
+                    const cookies = document.cookie.split(';');
+                    for (const cookie of cookies) {
+                        const [name, value] = cookie.trim().split('=');
+                        if (name === 'session_token' && value) {
+                            localStorage.setItem("session_token", value);
+                            console.log("✅ Found session_token in cookie");
+                            break;
+                        }
+                    }
+                }
+
                 // Clean up URL and redirect
                 window.history.replaceState({}, document.title, "/dashboard");
                 window.location.href = "/dashboard";
+            } else {
+                console.error("❌ No user in response");
             }
         } catch (error) {
-            console.error("Session exchange failed:", error);
+            console.error("❌ Session exchange failed:", error);
+            console.error("Error details:", error.response?.data);
             setUser(null);
         } finally {
             setLoading(false);

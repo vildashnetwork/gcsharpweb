@@ -972,25 +972,58 @@ export default function SignIn() {
     };
 
     // Exchange OAuth session
+    // In SignIn.tsx - Update the exchangeSession function
     const exchangeSession = async (sessionId) => {
         try {
+            console.log("🔄 Exchanging OAuth session...");
+            console.log("Session ID:", sessionId);
+
             const response = await api.post("/auth/exchange-session", { sessionId });
+
+            console.log("📦 Exchange response:", response.data);
+
             if (response.data?.user) {
                 const userData = response.data.user;
                 const sessionToken = response.data.session_token;
 
+                // Store user data
                 localStorage.setItem("user", JSON.stringify(userData));
+                console.log("✅ User stored:", userData.email);
+
+                // Store session token
                 if (sessionToken) {
                     localStorage.setItem("session_token", sessionToken);
-                    console.log("✅ Session token stored from OAuth:", sessionToken.substring(0, 20) + "...");
+                    console.log("✅ Session token stored:", sessionToken.substring(0, 20) + "...");
+                } else {
+                    console.error("❌ No session_token in response!");
+                    // Try to get from cookie as fallback
+                    const cookies = document.cookie.split(';');
+                    for (const cookie of cookies) {
+                        const [name, value] = cookie.trim().split('=');
+                        if (name === 'session_token' && value) {
+                            localStorage.setItem("session_token", value);
+                            console.log("✅ Found session_token in cookie");
+                            break;
+                        }
+                    }
                 }
-                window.location.href = "/dashboard";
+
+                // Verify token was stored
+                const storedToken = localStorage.getItem("session_token");
+                if (storedToken) {
+                    console.log("🔐 Token verified in localStorage");
+                    window.location.href = "/dashboard";
+                } else {
+                    setError("Authentication successful but no session found. Please try again.");
+                }
+            } else {
+                setError("Authentication failed. Please try again.");
             }
         } catch (error) {
-            console.error("Error exchanging session:", error);
+            console.error("❌ Error exchanging session:", error);
+            setError(error.response?.data?.detail || "Authentication failed. Please try again.");
         }
     };
-
     // Handle Google Login
     const handleGoogleLogin = async () => {
         if (googleLoading) return;
