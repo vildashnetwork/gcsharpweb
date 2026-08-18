@@ -18,9 +18,14 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
-
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+
+# ============================================================
+# Setup logging FIRST - before using logger anywhere
+# ============================================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gcsmart")
 
 # ============================================================
 # Configuration & Environment
@@ -38,28 +43,22 @@ CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
 APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
 APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
 
-
-
-
+# Twilio Configuration
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
-TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID') 
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID')
 
-
-
-
+# Initialize Twilio client
 twilio_client = None
 if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
     try:
         twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        logger.info(" Twilio client initialized successfully")
+        logger.info("Twilio client initialized successfully")
     except Exception as e:
-        logger.error(f" Failed to initialize Twilio client: {e}")
+        logger.error(f"Failed to initialize Twilio client: {e}")
 else:
-    logger.warning("" \
-    " Twilio credentials not configured - SMS sending will be disabled")
-
+    logger.warning("Twilio credentials not configured - SMS sending will be disabled")
 
 # Initialize MongoDB
 client = AsyncIOMotorClient(MONGO_URL)
@@ -78,9 +77,6 @@ app = FastAPI(
 )
 
 api_router = APIRouter(prefix="/api")
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gcsmart")
 
 # ============================================================
 # CORS Configuration
@@ -105,11 +101,9 @@ DEFAULT_MODEL_CHAIN = [
     "openrouter/free",
 ]
 
-
-
-
-
-
+# ============================================================
+# Twilio SMS Helper Function
+# ============================================================
 
 def send_sms_via_twilio(to_number: str, message: str) -> dict:
     """
@@ -133,7 +127,7 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
         if not to_number.startswith('+'):
             to_number = '+' + to_number
         
-        logger.info(f"📱 Sending SMS to: {to_number}")
+        logger.info(f"Sending SMS to: {to_number}")
         
         # Send SMS using messaging service or direct phone number
         if TWILIO_MESSAGING_SERVICE_SID:
@@ -149,28 +143,25 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
                 to=to_number
             )
         
-        logger.info(f" SMS sent successfully. SID: {message.sid}")
+        logger.info(f"SMS sent successfully. SID: {message.sid}")
         return {
             'success': True,
             'sid': message.sid,
             'status': message.status
         }
     except TwilioRestException as e:
-        logger.error(f" Twilio error: {e}")
+        logger.error(f"Twilio error: {e}")
         return {
             'success': False,
             'error': f"Twilio error: {e.msg}",
             'code': e.code
         }
     except Exception as e:
-        logger.error(f" Failed to send SMS: {e}")
+        logger.error(f"Failed to send SMS: {e}")
         return {
             'success': False,
             'error': str(e)
         }
-
-
-
 
 def _sanitize_model_id(raw: str) -> str:
     s = raw.strip()
@@ -186,7 +177,6 @@ def _sanitize_model_id(raw: str) -> str:
         s = s[1:-1].strip()
     return s
 
-
 def _get_model_chain() -> List[str]:
     primary = _sanitize_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0]))
     extra_raw = os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
@@ -199,7 +189,6 @@ def _get_model_chain() -> List[str]:
             seen.add(m)
             ordered.append(m)
     return ordered
-
 
 class SimpleLLM:
     def __init__(self, api_key: str = "", models: Optional[List[str]] = None):
@@ -278,7 +267,6 @@ class SimpleLLM:
             "This is usually temporary — please try again in a moment. "
             "In the meantime, you can browse past papers or check your dashboard."
         )
-
 
 # ============================================================
 # Local Math Solver
@@ -407,7 +395,7 @@ class SolveRequest(BaseModel):
     subject: Optional[str] = None
 
 # ============================================================
-# NEW: Phone & Email Login Models
+# Phone & Email Login Models
 # ============================================================
 
 class PhoneLoginRequest(BaseModel):
@@ -466,7 +454,7 @@ async def get_current_user(request: Request):
     return user
 
 # ============================================================
-# NEW: Phone & Email Authentication Routes
+# Phone & Email Authentication Routes
 # ============================================================
 
 # ---------- PHONE AUTH ----------
@@ -499,7 +487,7 @@ async def send_phone_otp(req: PhoneLoginRequest):
         result = send_sms_via_twilio(full_number, sms_message)
         
         if result['success']:
-            logger.info(f"✅ OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
+            logger.info(f"OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
             return {
                 "success": True,
                 "message": "Verification code sent via SMS",
@@ -507,18 +495,18 @@ async def send_phone_otp(req: PhoneLoginRequest):
             }
         else:
             # Log the error
-            logger.error(f"❌ SMS failed for {full_number}: {result.get('error')}")
+            logger.error(f"SMS failed for {full_number}: {result.get('error')}")
             
             # Check if we're in development mode
             env = os.environ.get("ENVIRONMENT", "development")
             
             if env == "development":
                 # In development, return OTP for testing
-                logger.info(f"📱 Development mode: OTP for {full_number} is {otp_code}")
+                logger.info(f"Development mode: OTP for {full_number} is {otp_code}")
                 return {
                     "success": True,
                     "message": "OTP generated (development mode - SMS not sent)",
-                    "otp": otp_code,  # Only return in development!
+                    "otp": otp_code,
                     "expires_in": 300,
                     "warning": "SMS not sent - Twilio error: " + result.get('error', 'Unknown error')
                 }
@@ -530,13 +518,8 @@ async def send_phone_otp(req: PhoneLoginRequest):
                     "error": "SMS delivery failed"
                 }
     except Exception as e:
-        logger.error(f"❌ Send OTP error: {e}")
+        logger.error(f"Send OTP error: {e}")
         raise HTTPException(status_code=500, detail="Failed to send verification code")
-
-
-
-
-
 
 @api_router.post("/auth/phone/verify")
 async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
@@ -627,8 +610,9 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Verify OTP error: {e}")
+        logger.error(f"Verify OTP error: {e}")
         raise HTTPException(status_code=500, detail="Verification failed")
+
 # ---------- EMAIL AUTH ----------
 
 @api_router.post("/auth/email/register")
@@ -646,7 +630,7 @@ async def email_register(req: EmailSignupRequest):
             "user_id": user_id,
             "email": req.email,
             "name": req.name,
-            "password": req.password,  # In production, hash this!
+            "password": req.password,
             "phone": None,
             "role": None,
             "onboarded": False,
@@ -668,7 +652,7 @@ async def email_register(req: EmailSignupRequest):
         await db.users.insert_one(dict(user))
         
         user.pop("_id", None)
-        user.pop("password", None)  # Don't return password
+        user.pop("password", None)
         
         return {"success": True, "user": user}
     except HTTPException:
@@ -707,7 +691,7 @@ async def email_login(req: EmailLoginRequest, response: Response):
         )
         
         user.pop("_id", None)
-        user.pop("password", None)  # Don't return password
+        user.pop("password", None)
         
         return {
             "success": True, 
@@ -720,7 +704,7 @@ async def email_login(req: EmailLoginRequest, response: Response):
         logger.error(f"Email login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
 
-# ---------- EXISTING AUTH ROUTES (modified to support phone) ----------
+# ---------- EXISTING AUTH ROUTES ----------
 
 @api_router.post("/auth/register")
 async def register_user(req: RegisterRequest):
@@ -1451,7 +1435,7 @@ def _clean_json(text: str):
     raise ValueError("Could not extract valid JSON from AI response")
 
 # ============================================================
-# Papers Module - UPDATED with better field handling
+# Papers Module
 # ============================================================
 
 @api_router.get("/papers/filters")
@@ -1475,7 +1459,6 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
     
-    # Ensure all fields exist for frontend
     for p in papers:
         p.setdefault("fileSize", 0)
         p.setdefault("originalFileSize", 0)
@@ -1605,7 +1588,7 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
     return {"answer": resp}
 
 # ============================================================
-# Drafts - UPDATED with better error handling
+# Drafts
 # ============================================================
 
 @api_router.get("/drafts")
@@ -1629,7 +1612,6 @@ async def list_drafts(user: dict = Depends(get_current_user)):
                 pp["saved_at"] = d["created_at"]
                 result.append(pp)
             else:
-                # If paper not found, create a placeholder
                 result.append({
                     "paper_id": d["paper_id"],
                     "title": "Paper not found",
@@ -1652,12 +1634,10 @@ async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
     try:
         logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
         
-        # Check if paper exists (optional - we allow saving even if not found)
         paper = await db.papers.find_one({"paper_id": req.paper_id})
         if not paper:
             logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
         
-        # Check existing draft
         existing = await db.drafts.find_one({
             "user_id": user["user_id"], 
             "paper_id": req.paper_id
@@ -1668,7 +1648,6 @@ async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
             logger.info(f"Drafts - Removed draft for {req.paper_id}")
             return {"saved": False}
         
-        # Save draft
         await db.drafts.insert_one({
             "user_id": user["user_id"],
             "paper_id": req.paper_id,
