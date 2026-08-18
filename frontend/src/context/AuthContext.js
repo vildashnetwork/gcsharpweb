@@ -88,7 +88,6 @@
 
 
 
-
 // src/context/AuthContext.tsx
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import api from "../lib/api";
@@ -143,7 +142,6 @@ export function AuthProvider({ children }) {
     }, []);
 
     // Exchange OAuth session
-    // src/context/AuthContext.tsx - Updated exchangeSession
     const exchangeSession = async (sessionId) => {
         try {
             console.log("🔄 Exchanging OAuth session...");
@@ -197,6 +195,7 @@ export function AuthProvider({ children }) {
         }
     };
 
+    // ✅ FIXED: Added checkAuth to dependency array
     useEffect(() => {
         // Check for OAuth callback
         const params = new URLSearchParams(window.location.search);
@@ -227,7 +226,7 @@ export function AuthProvider({ children }) {
         }
 
         checkAuth();
-    }, []);
+    }, [checkAuth]); // ✅ ADDED checkAuth to dependency array
 
     // Login with email
     const loginWithEmail = async (email, password) => {
