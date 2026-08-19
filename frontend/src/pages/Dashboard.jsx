@@ -412,8 +412,9 @@ export default function Dashboard() {
                         <Calendar className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div className="space-y-3">
+                        {/* border-l-4 ${r.color} */}
                         {roadmap.map((r) => (
-                            <div key={r.title} className={`rounded-lg border border-border border-l-4 ${r.color} bg-secondary/40 p-3`}>
+                            <div key={r.title} className={`rounded-lg border border-border  bg-secondary/40 p-3`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-medium">{r.tag}</span>
                                     <span className="text-xs text-muted-foreground">{r.when}</span>

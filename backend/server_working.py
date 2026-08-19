@@ -6,6 +6,8 @@ import json
 import uuid
 import hashlib
 import logging
+import asyncio
+import requests
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -21,6 +23,10 @@ from pydantic import BaseModel
 
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+
+# APScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 # ============================================================
 # Setup logging FIRST - before using logger anywhere
@@ -49,6 +55,11 @@ TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
 TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID')
+
+# Brevo Configuration
+BREVO_API_KEY = os.environ.get('BREVO_API_KEY')
+BREVO_FROM_EMAIL = os.environ.get('BREVO_FROM_EMAIL', 'no-reply@yourdomain.com')
+BREVO_FROM_NAME = os.environ.get('BREVO_FROM_NAME', 'GCSharp')
 
 # Initialize Twilio client
 twilio_client = None
@@ -209,8 +220,6 @@ class SimpleLLM:
                 {"role": "user", "content": message},
             ],
             "temperature": 0.3,
-            # Bumped from 1000 -> 2000: longer worked solutions (mechanics,
-            # multi-step algebra) were getting cut off mid-derivation.
             "max_tokens": 2000,
         }
         headers = {
@@ -430,7 +439,7 @@ DEFAULT_SETTINGS = {
     "captions_enabled": False,
     "notifications_enabled": True,
     "email_notifications": True,
-    "theme": "system",       # "light" | "dark" | "system"
+    "theme": "system",
     "language": "en",
 }
 
@@ -986,10 +995,6 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
 # ============================================================
 # User Settings
 # ============================================================
-# Stored as a nested "settings" object on the user document.
-# GET always returns the full settings shape (defaults merged with
-# whatever the user has actually saved), so the frontend never has
-# to guess about missing keys.
 
 @api_router.get("/settings")
 async def get_settings(user: dict = Depends(get_current_user)):
@@ -1154,13 +1159,6 @@ async def list_attempts(user: dict = Depends(get_current_user)):
 # ============================================================
 # Dashboard Stats
 # ============================================================
-# Study time comes from two sources: quiz-attempt time_spent, and
-# active reading time tracked per-paper in paper_reading_time (see
-# the Reading Time Tracking section below). Each reading-time doc
-# keeps a daily_seconds map (date -> seconds) so the 7-day
-# consistency chart reflects the actual days reading happened on —
-# not just the day of the most recent heartbeat. Older docs written
-# before daily_seconds existed fall back to bucketing by last_updated.
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
@@ -1192,7 +1190,6 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     now = datetime.now(timezone.utc)
     week = [0] * 7
 
-    # Attempt minutes per day
     for a in attempts:
         try:
             d = datetime.fromisoformat(a["created_at"])
@@ -1204,9 +1201,6 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         except Exception:
             pass
 
-    # Reading minutes per day — prefer the daily_seconds breakdown;
-    # fall back to bucketing by last_updated for older docs that
-    # predate daily_seconds.
     for d_doc in reading_docs_full:
         daily = d_doc.get("daily_seconds") or {}
         if daily:
@@ -1691,12 +1685,6 @@ async def list_saved_videos(user: dict = Depends(get_current_user)):
 
 @api_router.post("/courses/{course_id}/watch")
 async def record_watch(course_id: str, user: dict = Depends(get_current_user)):
-    """
-    Upserts a recently-watched entry for this user/video, bumping it to
-    the top of their history on repeat views instead of creating a new
-    row each time. Call this whenever a video starts playing — separate
-    from /view, which only counts the first watch for teacher earnings.
-    """
     course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
     if not course:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -1888,27 +1876,6 @@ def _clean_json(text: str):
     raise ValueError("Could not extract valid JSON from AI response")
 
 async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retries: int = 1) -> dict:
-    """
-    Sends `prompt` to the model and parses the reply as JSON, retrying (by
-    default once) with a stronger "JSON only" reminder appended to the SAME
-    prompt if the first reply wasn't valid, parseable JSON containing
-    required_key with a truthy value.
-
-    This exists because the free OpenRouter models in the fallback chain
-    sometimes ignore "return ONLY JSON" under load and wrap the answer in
-    commentary or markdown fences. A plain retry usually fixes it — either
-    the model self-corrects, or the fallback chain happens to land on a
-    different, more compliant model this time.
-
-    Note: SimpleLLM.send_message() is single-turn (system + one user
-    message, no conversation history), so the retry re-sends the full
-    original prompt with the reminder appended rather than a short
-    follow-up — a short follow-up alone would lose all context.
-
-    Raises ValueError if still unparseable after all attempts, and logs the
-    last raw response so failures are actually debuggable instead of
-    disappearing into a generic 502.
-    """
     last_resp = ""
     for attempt in range(retries + 1):
         this_prompt = prompt if attempt == 0 else (
@@ -2074,12 +2041,6 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
 def _strip_reasoning_preamble(text: str) -> str:
-    """
-    Safety net: if the model ignores the system prompt and still opens
-    with a reasoning narration ('We are given...', 'Let's find...'),
-    cut everything before the first '## Given' / '## Solution' heading
-    so the student never sees the leaked thought process.
-    """
     match = re.search(r'##\s*(Given|Solution)', text)
     if match and match.start() > 0:
         return text[match.start():].strip()
@@ -2113,18 +2074,12 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
 # ============================================================
 # Reading Time Tracking
 # ============================================================
-# Each document tracks total_seconds (lifetime total for that paper)
-# AND a daily_seconds map (date -> seconds) so the dashboard's 7-day
-# consistency chart can attribute time to the day it was actually
-# read on, rather than lumping everything onto the day of the last
-# heartbeat.
 
 class ReadingTimeRequest(BaseModel):
     seconds: int  # delta seconds since last heartbeat
 
 @api_router.post("/papers/{paper_id}/reading-time")
 async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict = Depends(get_current_user)):
-    # Clamp to guard against a stalled tab sending a huge delta after resume
     seconds = max(0, min(req.seconds, 120))
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -2150,6 +2105,8 @@ async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict
     doc = await db.paper_reading_time.find_one(
         {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
     )
+    # Fire-and-forget streak update
+    asyncio.create_task(update_user_streak(user))
     return {"ok": True, "total_seconds": doc.get("total_seconds", 0) if doc else seconds}
 
 @api_router.get("/papers/{paper_id}/reading-time")
@@ -2160,8 +2117,198 @@ async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)
     return {"total_seconds": (doc or {}).get("total_seconds", 0)}
 
 # ============================================================
-# Drafts
+# Streak and Reminders System
 # ============================================================
+
+def parse_daily_commitment(commitment_str: str) -> int:
+    """Return required study seconds, default 3600 if unparsable."""
+    if not commitment_str:
+        return 3600
+    commitment_str = commitment_str.lower().strip()
+    match = re.match(r'(\d+)\s*(hour|minute|min|h|m)', commitment_str)
+    if not match:
+        return 3600
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit.startswith('hour') or unit == 'h':
+        return value * 3600
+    else:
+        return value * 60
+
+async def get_study_time_for_date(user_id: str, date: datetime.date) -> int:
+    """Returns total seconds studied on that date."""
+    start = datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.combine(date, datetime.max.time(), tzinfo=timezone.utc)
+
+    # Sum attempts time_spent
+    attempts_cursor = db.attempts.find({
+        "user_id": user_id,
+        "created_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}
+    })
+    attempt_seconds = 0
+    async for att in attempts_cursor:
+        attempt_seconds += att.get("time_spent", 0)
+
+    # Sum reading time from daily_seconds map
+    reading_docs = db.paper_reading_time.find({"user_id": user_id})
+    reading_seconds = 0
+    date_str = date.isoformat()
+    async for doc in reading_docs:
+        daily = doc.get("daily_seconds", {})
+        reading_seconds += daily.get(date_str, 0)
+
+    return attempt_seconds + reading_seconds
+
+async def update_user_streak(user: dict) -> dict:
+    """Update streak and level based on today's study time."""
+    user_id = user["user_id"]
+    today = datetime.now(timezone.utc).date()
+    today_seconds = await get_study_time_for_date(user_id, today)
+    goal_seconds = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
+    met_goal = today_seconds >= goal_seconds
+
+    streak = user.get("streak", 0)
+    last_met = user.get("last_goal_met_date")
+    if last_met:
+        last_met_date = datetime.fromisoformat(last_met).date()
+    else:
+        last_met_date = None
+
+    if met_goal:
+        if last_met_date == today:
+            # Already counted today, do nothing
+            pass
+        elif last_met_date == today - timedelta(days=1):
+            # Consecutive day
+            streak += 1
+        else:
+            # Reset streak to 1
+            streak = 1
+        # Update last_goal_met_date to today
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"streak": streak, "last_goal_met_date": today.isoformat()}}
+        )
+    else:
+        # Did not meet goal today; we only reset when a day passes, will be handled by daily job
+        pass
+
+    # Update level based on streak
+    new_level = 1 + streak // 7
+    if new_level != user.get("level", 1):
+        await db.users.update_one({"user_id": user_id}, {"$set": {"level": new_level}})
+
+    return {"streak": streak, "level": new_level, "met_goal": met_goal, "today_seconds": today_seconds, "goal_seconds": goal_seconds}
+
+def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: str):
+    if not BREVO_API_KEY:
+        logger.error("BREVO_API_KEY not set")
+        return
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "sender": {
+            "name": BREVO_FROM_NAME,
+            "email": BREVO_FROM_EMAIL
+        },
+        "to": [{"email": to_email, "name": to_name}],
+        "subject": subject,
+        "htmlContent": html_content
+    }
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        if response.status_code not in (200, 201):
+            logger.error(f"Brevo error: {response.text}")
+    except Exception as e:
+        logger.error(f"Brevo send error: {e}")
+
+async def daily_reminder_job():
+    now = datetime.now(timezone.utc)
+    # Run at 15:00 UTC = 16:00 Cameroon
+    if now.hour != 15:
+        return
+
+    logger.info("Running daily reminder check")
+    yesterday = (now - timedelta(days=1)).date()
+    users = await db.users.find({}).to_list(1000)
+    for user in users:
+        user_id = user["user_id"]
+        email = user.get("email")
+        if not email:
+            continue
+        # Check if already sent for yesterday
+        log = await db.reminder_log.find_one({"user_id": user_id, "date": yesterday.isoformat()})
+        if log:
+            continue
+
+        seconds = await get_study_time_for_date(user_id, yesterday)
+        goal = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
+        if seconds >= goal:
+            # Met goal yesterday -> update streak (if not already)
+            last_met = user.get("last_goal_met_date")
+            if last_met:
+                last_met_date = datetime.fromisoformat(last_met).date()
+            else:
+                last_met_date = None
+
+            if last_met_date == yesterday:
+                pass  # already counted
+            elif last_met_date == yesterday - timedelta(days=1):
+                streak = user.get("streak", 0) + 1
+            else:
+                streak = 1
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"streak": streak, "last_goal_met_date": yesterday.isoformat()}}
+            )
+            new_level = 1 + streak // 7
+            await db.users.update_one({"user_id": user_id}, {"$set": {"level": new_level}})
+        else:
+            # Did not meet goal yesterday -> reset streak to 0
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"streak": 0}}
+            )
+            # Send reminder email
+            name = user.get("name", "Student")
+            subject = "📚 Don't break your study streak!"
+            html = f"""
+            <h2>Hi {name},</h2>
+            <p>We noticed you didn't study yesterday. Your current streak is <strong>{user.get('streak', 0)}</strong> days.</p>
+            <p>Remember, your daily goal is <strong>{user.get('daily_commitment', '1 hour')}</strong>.</p>
+            <p>Keep going and don't break the chain! 🔥</p>
+            <a href="{APP_URL}/dashboard" style="background:#4F46E5;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Go to Dashboard</a>
+            """
+            send_brevo_email(email, name, subject, html)
+            # Log reminder sent
+            await db.reminder_log.insert_one({
+                "user_id": user_id,
+                "date": yesterday.isoformat(),
+                "sent_at": now.isoformat()
+            })
+
+# ============================================================
+# Streak API Endpoint
+# ============================================================
+
+@api_router.get("/user/streak")
+async def get_user_streak(user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).date()
+    today_seconds = await get_study_time_for_date(user["user_id"], today)
+    goal = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
+    progress_percent = min(100, int((today_seconds / goal) * 100)) if goal > 0 else 0
+    return {
+        "streak": user.get("streak", 0),
+        "level": user.get("level", 1),
+        "today_seconds": today_seconds,
+        "goal_seconds": goal,
+        "progress_percent": progress_percent,
+        "last_goal_met_date": user.get("last_goal_met_date"),
+        "daily_commitment": user.get("daily_commitment", "1 hour")
+    }
 
 # ============================================================
 # Drafts
@@ -2172,14 +2319,12 @@ async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
     try:
         logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
 
-        # Check if draft already exists
         existing = await db.drafts.find_one({
             "user_id": user["user_id"],
             "paper_id": req.paper_id
         })
 
         if existing:
-            # Remove draft
             result = await db.drafts.delete_one({
                 "user_id": user["user_id"], 
                 "paper_id": req.paper_id
@@ -2187,7 +2332,6 @@ async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
             logger.info(f"Drafts - Removed draft for {req.paper_id}")
             return {"saved": False}
         else:
-            # Create draft with a unique draft_id
             draft_doc = {
                 "draft_id": f"draft_{uuid.uuid4().hex[:12]}",
                 "user_id": user["user_id"],
@@ -2253,6 +2397,7 @@ async def list_drafts(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"List drafts error: {e}")
         return []
+
 # ============================================================
 # Generate Video from Highlighted Text
 # ============================================================
@@ -2263,27 +2408,16 @@ class HighlightVideoRequest(BaseModel):
 
 @api_router.post("/papers/{paper_id}/video/highlight")
 async def generate_video_from_highlight(paper_id: str, req: HighlightVideoRequest, user: dict = Depends(get_current_user)):
-    """
-    Generate a video solution based on the highlighted text from the PDF
-    """
-    # Get the paper for context
     p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
 
-    # Check cache for this specific highlight.
-    # NOTE: uses hashlib, not Python's built-in hash() — str hashing is
-    # randomized per-process (PYTHONHASHSEED) for security reasons, so
-    # hash(req.text) produced a different cache_key after every server
-    # restart, silently orphaning all previously cached entries. sha256
-    # is stable across restarts.
     text_hash = hashlib.sha256(req.text.encode("utf-8")).hexdigest()[:16]
     cache_key = f"{paper_id}_{text_hash}"
     cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
     if cached:
         return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
 
-    # Get the paper text for context
     data = await fetch_pdf_bytes(p["pdf_url"])
     full_text = extract_pdf_text(data, max_chars=3000)
 
@@ -2309,11 +2443,6 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
 
     chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
 
-    # Was: a single chat.send_message() call with no retry, so any one
-    # non-JSON reply from a free model (or the whole model chain being
-    # down) turned straight into a 502 with no way to tell which had
-    # happened. _ask_ai_for_json retries once with a stronger reminder,
-    # and logs the actual raw response on failure.
     try:
         parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
         raw_scenes = parsed["scenes"]
@@ -2343,45 +2472,6 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
 
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
-@api_router.post("/drafts")
-async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
-    try:
-        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
-
-        paper = await db.papers.find_one({"paper_id": req.paper_id})
-        if not paper:
-            logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
-
-        existing = await db.drafts.find_one({
-            "user_id": user["user_id"],
-            "paper_id": req.paper_id
-        })
-
-        if existing:
-            await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
-            logger.info(f"Drafts - Removed draft for {req.paper_id}")
-            return {"saved": False}
-
-        await db.drafts.insert_one({
-            "user_id": user["user_id"],
-            "paper_id": req.paper_id,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        })
-        logger.info(f"Drafts - Saved draft for {req.paper_id}")
-        return {"saved": True}
-    except Exception as e:
-        logger.error(f"Drafts error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.delete("/drafts/{paper_id}")
-async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
-    try:
-        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Delete draft error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # ============================================================
 # Root Endpoints
 # ============================================================
@@ -2405,12 +2495,22 @@ async def root():
 app.include_router(api_router)
 
 # ============================================================
+# Scheduler
+# ============================================================
+
+scheduler = AsyncIOScheduler()
+scheduler.add_job(daily_reminder_job, IntervalTrigger(hours=1), id="daily_reminder")
+scheduler.start()
+logger.info("Scheduler started for daily reminders")
+
+# ============================================================
 # Shutdown Handler
 # ============================================================
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+    scheduler.shutdown()
 
 # ============================================================
 # Main Entry Point

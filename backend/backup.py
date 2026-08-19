@@ -4,6 +4,7 @@ import io
 import re
 import json
 import uuid
+import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -115,20 +116,20 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
             'success': False,
             'error': 'Twilio client not initialized. Check your credentials.'
         }
-    
+
     if not TWILIO_PHONE_NUMBER and not TWILIO_MESSAGING_SERVICE_SID:
         return {
             'success': False,
             'error': 'No sending phone number or messaging service configured.'
         }
-    
+
     try:
         # Format the phone number with country code
         if not to_number.startswith('+'):
             to_number = '+' + to_number
-        
+
         logger.info(f"Sending SMS to: {to_number}")
-        
+
         # Send SMS using messaging service or direct phone number
         if TWILIO_MESSAGING_SERVICE_SID:
             message = twilio_client.messages.create(
@@ -142,7 +143,7 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
                 from_=TWILIO_PHONE_NUMBER,
                 to=to_number
             )
-        
+
         logger.info(f"SMS sent successfully. SID: {message.sid}")
         return {
             'success': True,
@@ -208,7 +209,9 @@ class SimpleLLM:
                 {"role": "user", "content": message},
             ],
             "temperature": 0.3,
-            "max_tokens": 1000,
+            # Bumped from 1000 -> 2000: longer worked solutions (mechanics,
+            # multi-step algebra) were getting cut off mid-derivation.
+            "max_tokens": 2000,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -490,7 +493,7 @@ async def send_phone_otp(req: PhoneLoginRequest):
     try:
         # Generate 6-digit OTP
         otp_code = ''.join([str(uuid.uuid4().int % 10) for _ in range(6)])
-        
+
         # Store OTP in database with expiration (5 minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         await db.phone_otps.insert_one({
@@ -501,16 +504,16 @@ async def send_phone_otp(req: PhoneLoginRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "verified": False
         })
-        
+
         # Format the full phone number
         full_number = f"{req.country_code}{req.phone}"
-        
+
         # Create SMS message
         sms_message = f"Your GCSHARP verification code is: {otp_code}. Valid for 5 minutes."
-        
+
         # Send SMS via Twilio
         result = send_sms_via_twilio(full_number, sms_message)
-        
+
         if result['success']:
             logger.info(f"OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
             return {
@@ -521,10 +524,10 @@ async def send_phone_otp(req: PhoneLoginRequest):
         else:
             # Log the error
             logger.error(f"SMS failed for {full_number}: {result.get('error')}")
-            
+
             # Check if we're in development mode
             env = os.environ.get("ENVIRONMENT", "development")
-            
+
             if env == "development":
                 # In development, return OTP for testing
                 logger.info(f"Development mode: OTP for {full_number} is {otp_code}")
@@ -557,30 +560,30 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
             "otp": req.otp,
             "verified": False
         })
-        
+
         if not otp_record:
             raise HTTPException(status_code=401, detail="Invalid verification code")
-        
+
         # Check expiration
         expires_at = otp_record["expires_at"]
         if isinstance(expires_at, str):
             expires_at = datetime.fromisoformat(expires_at)
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        
+
         if expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Verification code expired")
-        
+
         # Mark OTP as verified
         await db.phone_otps.update_one(
             {"_id": otp_record["_id"]},
             {"$set": {"verified": True}}
         )
-        
+
         # Find or create user
         phone_full = f"{req.country_code}{req.phone}"
         user = await db.users.find_one({"phone": phone_full}, {"_id": 0})
-        
+
         if not user:
             # Create new user
             user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -607,7 +610,7 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.users.insert_one(dict(user))
-        
+
         # Create session
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -617,18 +620,18 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
+
         user.pop("_id", None)
         user.pop("password", None)
         return {
-            "success": True, 
+            "success": True,
             "user": user,
             "session_token": session_token
         }
@@ -648,7 +651,7 @@ async def email_register(req: EmailSignupRequest):
         existing = await db.users.find_one({"email": req.email})
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
-        
+
         # Create user
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user = {
@@ -675,10 +678,10 @@ async def email_register(req: EmailSignupRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(dict(user))
-        
+
         user.pop("_id", None)
         user.pop("password", None)
-        
+
         return {"success": True, "user": user}
     except HTTPException:
         raise
@@ -693,11 +696,11 @@ async def email_login(req: EmailLoginRequest, response: Response):
         user = await db.users.find_one({"email": req.email}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         # In production, use proper password hashing!
         if user.get("password") != req.password:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         # Create session
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -707,19 +710,19 @@ async def email_login(req: EmailLoginRequest, response: Response):
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
+
         user.pop("_id", None)
         user.pop("password", None)
-        
+
         return {
-            "success": True, 
+            "success": True,
             "user": user,
             "session_token": session_token
         }
@@ -794,7 +797,6 @@ async def login_user(req: LoginRequest, response: Response):
     return {"success": True, "user": user, "session_token": session_token}
 
 
-
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
     session_id = request.headers.get("X-Session-ID")
@@ -857,52 +859,44 @@ async def process_session(request: Request, response: Response):
     )
     user.pop("_id", None)
     user.pop("password", None)
-    
-    # ✅ Return session_token in the response body
+
     return {
         "user": user,
-        "session_token": session_token  # Add this!
+        "session_token": session_token
     }
 
 
-
-
-
-
-
-
-# Add this new endpoint after your existing auth routes
 @api_router.post("/auth/exchange-session")
 async def exchange_session(request: Request, response: Response):
     """Exchange OAuth session_id for user session with token"""
     try:
         body = await request.json()
         session_id = body.get("sessionId")
-        
+
         if not session_id:
             raise HTTPException(status_code=400, detail="Missing session_id")
-        
+
         logger.info(f"Exchanging session: {session_id}")
-        
+
         # Fetch session data from auth service
         async with httpx.AsyncClient() as hc:
             r = await hc.get(
                 "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
                 headers={"X-Session-ID": session_id},
             )
-        
+
         if r.status_code != 200:
             raise HTTPException(status_code=401, detail="Auth failed")
-        
+
         data = r.json()
         email = data.get("email")
-        
+
         if not email:
             raise HTTPException(status_code=400, detail="No email in session data")
-        
+
         # Find or create user
         existing = await db.users.find_one({"email": email})
-        
+
         if existing:
             user = existing
             # Remove sensitive fields
@@ -936,31 +930,30 @@ async def exchange_session(request: Request, response: Response):
             await db.users.insert_one(dict(user))
             user.pop("_id", None)
             user.pop("password", None)
-        
+
         # Create session token
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        
+
         await db.user_sessions.insert_one({
             "user_id": user["user_id"],
             "session_token": session_token,
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
-        # ✅ Return both user and session_token
+
         return {
             "user": user,
             "session_token": session_token
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1158,201 +1151,16 @@ async def list_attempts(user: dict = Depends(get_current_user)):
     items = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
-
-
-
-# @api_router.get("/dashboard/stats")
-# async def dashboard_stats(user: dict = Depends(get_current_user)):
-#     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
-#     questions_attempted = sum(a["total"] for a in attempts)
-#     correct = sum(a["score"] for a in attempts)
-#     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
-
-#     # Study time comes from two sources:
-#     #  1. time_spent recorded on quiz attempts
-#     #  2. active reading time recorded on paper_reading_time (PaperReader screen)
-#     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
-
-#     reading_docs_full = await db.paper_reading_time.find(
-#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1}
-#     ).to_list(2000)
-#     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
-
-#     study_seconds = attempt_seconds + reading_seconds
-#     study_hours = round(study_seconds / 3600, 1)
-
-#     weak_counter, strong_counter = {}, {}
-#     for a in attempts:
-#         for t in a.get("weak_topics", []):
-#             weak_counter[t] = weak_counter.get(t, 0) + 1
-#         for t in a.get("strong_topics", []):
-#             strong_counter[t] = strong_counter.get(t, 0) + 1
-#     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
-#     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
-
-#     now = datetime.now(timezone.utc)
-#     week = [0] * 7
-
-#     # Attempt minutes per day
-#     for a in attempts:
-#         try:
-#             d = datetime.fromisoformat(a["created_at"])
-#             if d.tzinfo is None:
-#                 d = d.replace(tzinfo=timezone.utc)
-#             delta = (now.date() - d.date()).days
-#             if 0 <= delta < 7:
-#                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
-#         except Exception:
-#             pass
-
-#     # Reading minutes per day — read directly from each paper's
-#     # daily_seconds map so the chart reflects the actual day(s)
-#     # reading happened, not just the day of the last heartbeat.
-#     for d_doc in reading_docs_full:
-#         daily = d_doc.get("daily_seconds") or {}
-#         for i in range(7):
-#             day_key = (now.date() - timedelta(days=i)).isoformat()
-#             secs = daily.get(day_key, 0)
-#             if secs:
-#                 week[6 - i] += round(secs / 60)
-
-#     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-#     weekday_today = now.weekday()
-#     consistency = []
-#     for i in range(7):
-#         idx = (weekday_today - 6 + i) % 7
-#         consistency.append({"day": days[idx], "minutes": week[i]})
-
-#     return {
-#         "study_hours": study_hours,
-#         "study_seconds": study_seconds,
-#         "questions_attempted": questions_attempted,
-#         "accuracy": accuracy,
-#         "streak": user.get("streak", 0),
-#         "xp": user.get("xp", 0),
-#         "level": user.get("level", 1),
-#         "xp_to_next": 500 - (user.get("xp", 0) % 500),
-#         "weak_topics": weak,
-#         "strong_topics": strong,
-#         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
-#         "consistency": consistency,
-#         "total_attempts": len(attempts),
-#     }
-
-
-
-
-
-
-
-
-
-# @api_router.get("/dashboard/stats")
-# async def dashboard_stats(user: dict = Depends(get_current_user)):
-#     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
-#     questions_attempted = sum(a["total"] for a in attempts)
-#     correct = sum(a["score"] for a in attempts)
-#     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
-
-#     # Study time comes from two sources:
-#     #  1. time_spent recorded on quiz attempts
-#     #  2. active reading time recorded on paper_reading_time (PaperReader screen)
-#     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
-
-#     reading_docs_full = await db.paper_reading_time.find(
-#         {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
-#     ).to_list(2000)
-#     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
-
-#     study_seconds = attempt_seconds + reading_seconds
-#     study_hours = round(study_seconds / 3600, 1)
-
-#     weak_counter, strong_counter = {}, {}
-#     for a in attempts:
-#         for t in a.get("weak_topics", []):
-#             weak_counter[t] = weak_counter.get(t, 0) + 1
-#         for t in a.get("strong_topics", []):
-#             strong_counter[t] = strong_counter.get(t, 0) + 1
-    
-    
-#     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
-#     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
-
-#     now = datetime.now(timezone.utc)
-#     week = [0] * 7
-
-#     # Attempt minutes per day
-#     for a in attempts:
-#         try:
-#             d = datetime.fromisoformat(a["created_at"])
-#             if d.tzinfo is None:
-#                 d = d.replace(tzinfo=timezone.utc)
-#             delta = (now.date() - d.date()).days
-#             if 0 <= delta < 7:
-#                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
-#         except Exception:
-#             pass
-
-    
-#     for d_doc in reading_docs_full:
-#         daily = d_doc.get("daily_seconds") or {}
-        
-#         # If daily_seconds is empty, use last_updated as fallback
-#         if not daily and d_doc.get("last_updated"):
-#             try:
-#                 d = datetime.fromisoformat(d_doc["last_updated"])
-#                 if d.tzinfo is None:
-#                     d = d.replace(tzinfo=timezone.utc)
-#                 delta = (now.date() - d.date()).days
-#                 if 0 <= delta < 7:
-#                     # Add the total_seconds to the day it was last updated
-#                     week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
-#             except Exception:
-#                 pass
-#         else:
-#             # Use daily_seconds if available
-#             for i in range(7):
-#                 day_key = (now.date() - timedelta(days=i)).isoformat()
-#                 secs = daily.get(day_key, 0)
-#                 if secs:
-#                     week[6 - i] += round(secs / 60)
-
-#     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-#     weekday_today = now.weekday()
-#     consistency = []
-#     for i in range(7):
-#         idx = (weekday_today - 6 + i) % 7
-#         consistency.append({"day": days[idx], "minutes": week[i]})
-
-#     return {
-#         "study_hours": study_hours,
-#         "study_seconds": study_seconds,
-#         "questions_attempted": questions_attempted,
-#         "accuracy": accuracy,
-#         "streak": user.get("streak", 0),
-#         "xp": user.get("xp", 0),
-#         "level": user.get("level", 1),
-#         "xp_to_next": 500 - (user.get("xp", 0) % 500),
-#         "weak_topics": weak,
-#         "strong_topics": strong,
-#         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
-#         "consistency": consistency,
-#         "total_attempts": len(attempts),
-#     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# ============================================================
+# Dashboard Stats
+# ============================================================
+# Study time comes from two sources: quiz-attempt time_spent, and
+# active reading time tracked per-paper in paper_reading_time (see
+# the Reading Time Tracking section below). Each reading-time doc
+# keeps a daily_seconds map (date -> seconds) so the 7-day
+# consistency chart reflects the actual days reading happened on —
+# not just the day of the most recent heartbeat. Older docs written
+# before daily_seconds existed fall back to bucketing by last_updated.
 
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
@@ -1361,26 +1169,23 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     correct = sum(a.get("score", 0) for a in attempts)
     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
 
-    # Study time from attempts
     attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
 
-    # Get reading time documents
     reading_docs_full = await db.paper_reading_time.find(
-        {"user_id": user["user_id"]}, {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
+        {"user_id": user["user_id"]},
+        {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
     ).to_list(2000)
     reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
 
     study_seconds = attempt_seconds + reading_seconds
     study_hours = round(study_seconds / 3600, 1)
 
-    # Weak and strong topics
     weak_counter, strong_counter = {}, {}
     for a in attempts:
         for t in a.get("weak_topics", []):
             weak_counter[t] = weak_counter.get(t, 0) + 1
         for t in a.get("strong_topics", []):
             strong_counter[t] = strong_counter.get(t, 0) + 1
-
     weak = sorted(weak_counter, key=weak_counter.get, reverse=True)[:4]
     strong = sorted(strong_counter, key=strong_counter.get, reverse=True)[:4]
 
@@ -1399,10 +1204,18 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         except Exception:
             pass
 
-    # Reading minutes per day
+    # Reading minutes per day — prefer the daily_seconds breakdown;
+    # fall back to bucketing by last_updated for older docs that
+    # predate daily_seconds.
     for d_doc in reading_docs_full:
         daily = d_doc.get("daily_seconds") or {}
-        if not daily and d_doc.get("last_updated"):
+        if daily:
+            for i in range(7):
+                day_key = (now.date() - timedelta(days=i)).isoformat()
+                secs = daily.get(day_key, 0)
+                if secs:
+                    week[6 - i] += round(secs / 60)
+        elif d_doc.get("last_updated"):
             try:
                 d = datetime.fromisoformat(d_doc["last_updated"])
                 if d.tzinfo is None:
@@ -1412,12 +1225,6 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
                     week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
             except Exception:
                 pass
-        else:
-            for i in range(7):
-                day_key = (now.date() - timedelta(days=i)).isoformat()
-                secs = daily.get(day_key, 0)
-                if secs:
-                    week[6 - i] += round(secs / 60)
 
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_today = now.weekday()
@@ -1425,9 +1232,6 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
     for i in range(7):
         idx = (weekday_today - 6 + i) % 7
         consistency.append({"day": days[idx], "minutes": week[i]})
-
-    # ✅ Count total reading time documents (papers viewed)
-    total_papers_viewed = len(reading_docs_full)
 
     return {
         "study_hours": study_hours,
@@ -1442,23 +1246,12 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "strong_topics": strong,
         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
         "consistency": consistency,
-        "total_attempts": len(attempts),  # Number of quiz attempts
-        "total_papers_viewed": len(reading_docs_full),  
+        "total_attempts": len(attempts),
+        "total_papers_viewed": len(reading_docs_full),
     }
-# ============================================================
-# Leaderboard
-# ============================================================
-
-
-
-
-
-
-
-
 
 # ============================================================
-# AI Tutor - Additional Endpoints
+# AI Tutor - Session Management (title, pin, delete)
 # ============================================================
 
 @api_router.put("/ai/sessions/{session_id}/title")
@@ -1469,15 +1262,15 @@ async def update_session_title(session_id: str, request: Request, user: dict = D
         title = body.get("title", "").strip()
         if not title:
             raise HTTPException(status_code=400, detail="Title cannot be empty")
-        
+
         result = await db.ai_sessions.update_one(
             {"session_id": session_id, "user_id": user["user_id"]},
             {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
         )
-        
+
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         return {"ok": True, "title": title}
     except HTTPException:
         raise
@@ -1499,61 +1292,20 @@ async def delete_session(session_id: str, user: dict = Depends(get_current_user)
         logger.error(f"Delete session error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
-
-
-
-
-
-
-
-@api_router.put("/ai/sessions/{session_id}/title")
-async def update_session_title(session_id: str, request: Request, user: dict = Depends(get_current_user)):
-    try:
-        body = await request.json()
-        title = body.get("title", "").strip()
-        if not title:
-            raise HTTPException(status_code=400, detail="Title cannot be empty")
-        
-        result = await db.ai_sessions.update_one(
-            {"session_id": session_id, "user_id": user["user_id"]},
-            {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
-        )
-        
-        if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
-        return {"ok": True, "title": title}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Update session title error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
-
-
-# ============================================================
-# AI Tutor - Additional Endpoints
-# ============================================================
-
 @api_router.put("/ai/sessions/{session_id}/pin")
 async def toggle_pin_session(session_id: str, request: Request, user: dict = Depends(get_current_user)):
     try:
         body = await request.json()
         pinned = body.get("pinned", False)
-        
+
         result = await db.ai_sessions.update_one(
             {"session_id": session_id, "user_id": user["user_id"]},
             {"$set": {"pinned": pinned, "updated_at": datetime.now(timezone.utc).isoformat()}}
         )
-        
+
         if result.modified_count == 0:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         return {"ok": True, "pinned": pinned}
     except HTTPException:
         raise
@@ -1566,22 +1318,24 @@ async def upload_pdf(request: Request, user: dict = Depends(get_current_user)):
     try:
         form = await request.form()
         file = form.get("file")
-        
+
         if not file:
             raise HTTPException(status_code=400, detail="No file uploaded")
-        
+
         content = await file.read()
         reader = PdfReader(io.BytesIO(content))
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
-        
+
         return {"text": text[:5000], "filename": file.filename}
     except Exception as e:
         logger.error(f"PDF upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
+# ============================================================
+# Leaderboard
+# ============================================================
 
 @api_router.get("/leaderboard")
 async def leaderboard(user: dict = Depends(get_current_user)):
@@ -1845,11 +1599,6 @@ async def register_view(course_id: str, user: dict = Depends(get_current_user)):
 # ============================================================
 # Video Interactions: Likes, Saves, Recently Watched
 # ============================================================
-# Likes and saves are per-user join records (db.video_likes /
-# db.video_saves) against a course_id, mirroring the existing
-# drafts pattern used for papers below. "likes" is also kept as a
-# running counter on the course document itself so listing videos
-# doesn't need a separate aggregate query for the total count.
 
 # ---------- Likes ----------
 
@@ -2138,6 +1887,49 @@ def _clean_json(text: str):
 
     raise ValueError("Could not extract valid JSON from AI response")
 
+async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retries: int = 1) -> dict:
+    """
+    Sends `prompt` to the model and parses the reply as JSON, retrying (by
+    default once) with a stronger "JSON only" reminder appended to the SAME
+    prompt if the first reply wasn't valid, parseable JSON containing
+    required_key with a truthy value.
+
+    This exists because the free OpenRouter models in the fallback chain
+    sometimes ignore "return ONLY JSON" under load and wrap the answer in
+    commentary or markdown fences. A plain retry usually fixes it — either
+    the model self-corrects, or the fallback chain happens to land on a
+    different, more compliant model this time.
+
+    Note: SimpleLLM.send_message() is single-turn (system + one user
+    message, no conversation history), so the retry re-sends the full
+    original prompt with the reminder appended rather than a short
+    follow-up — a short follow-up alone would lose all context.
+
+    Raises ValueError if still unparseable after all attempts, and logs the
+    last raw response so failures are actually debuggable instead of
+    disappearing into a generic 502.
+    """
+    last_resp = ""
+    for attempt in range(retries + 1):
+        this_prompt = prompt if attempt == 0 else (
+            prompt + "\n\nIMPORTANT: Your previous reply could not be parsed as JSON. "
+            "Reply again with ONLY the JSON object — no markdown code fences, "
+            "no explanation, nothing before or after it."
+        )
+        resp = await chat.send_message(this_prompt)
+        last_resp = resp
+        try:
+            parsed = _clean_json(resp)
+            if parsed.get(required_key):
+                return parsed
+        except Exception:
+            continue
+    logger.error(
+        f"AI JSON generation failed after {retries + 1} attempt(s) for key '{required_key}'. "
+        f"Last raw response (truncated): {last_resp[:500]!r}"
+    )
+    raise ValueError(f"Could not get valid JSON with key '{required_key}' from AI")
+
 # ============================================================
 # Papers Module
 # ============================================================
@@ -2160,9 +1952,9 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     if year: query["year"] = year
     if paper: query["paper_number"] = paper
     if q: query["title"] = {"$regex": re.escape(q), "$options": "i"}
-    
+
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
-    
+
     for p in papers:
         p.setdefault("fileSize", 0)
         p.setdefault("originalFileSize", 0)
@@ -2172,7 +1964,7 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
         p.setdefault("downloads", 0)
         p.setdefault("description", "")
         p.setdefault("saved", False)
-    
+
     drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
     saved = {d["paper_id"] for d in drafts}
     for p in papers:
@@ -2281,22 +2073,51 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     await db.paper_video_cache.insert_one(dict(doc))
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
+def _strip_reasoning_preamble(text: str) -> str:
+    """
+    Safety net: if the model ignores the system prompt and still opens
+    with a reasoning narration ('We are given...', 'Let's find...'),
+    cut everything before the first '## Given' / '## Solution' heading
+    so the student never sees the leaked thought process.
+    """
+    match = re.search(r'##\s*(Given|Solution)', text)
+    if match and match.start() > 0:
+        return text[match.start():].strip()
+    return text
+
 @api_router.post("/papers/ask")
 async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user)):
     p = await db.papers.find_one({"paper_id": req.paper_id}, {"_id": 0})
     subject = p["subject"] if p else "General"
-    system = (f"You are GC AI, an expert {subject} tutor. A student highlighted a question from an exam paper. "
-              "Solve it clearly with concise numbered steps and a final answer.")
+    system = (
+        f"You are GC AI, an expert {subject} exam tutor writing a final worked solution for a student. "
+        "CRITICAL: Do NOT show your internal reasoning process. Never write phrases like "
+        "'We are given', 'We need to find', 'Let's define', 'Let's assume', or any narration of "
+        "how you are thinking through the problem. Go straight to the structured solution as if "
+        "writing model answers for an exam mark scheme.\n\n"
+        "Format your answer using these markdown sections:\n"
+        "## Given\n"
+        "A short bullet list of the known quantities from the question.\n\n"
+        "## Solution\n"
+        "Clearly numbered steps (1., 2., 3. ...), each showing the working, not the thought process. "
+        "Use $ ... $ for inline math and $$ ... $$ for standalone equations.\n\n"
+        "## Answer\n"
+        "The final numeric or symbolic result, stated in one line.\n\n"
+        "Be concise. Do not restate the question. Do not apologize or hedge."
+    )
     chat = _new_chat(f"ask_{uuid.uuid4().hex}", system)
-    resp = await chat.send_message(f"Solve this exam question step by step:\n\n{req.question}")
+    resp = await chat.send_message(f"Question:\n\n{req.question}")
+    resp = _strip_reasoning_preamble(resp)
     return {"answer": resp}
-
-
-
 
 # ============================================================
 # Reading Time Tracking
 # ============================================================
+# Each document tracks total_seconds (lifetime total for that paper)
+# AND a daily_seconds map (date -> seconds) so the dashboard's 7-day
+# consistency chart can attribute time to the day it was actually
+# read on, rather than lumping everything onto the day of the last
+# heartbeat.
 
 class ReadingTimeRequest(BaseModel):
     seconds: int  # delta seconds since last heartbeat
@@ -2305,12 +2126,17 @@ class ReadingTimeRequest(BaseModel):
 async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict = Depends(get_current_user)):
     # Clamp to guard against a stalled tab sending a huge delta after resume
     seconds = max(0, min(req.seconds, 120))
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    today_key = now.date().isoformat()
 
     await db.paper_reading_time.update_one(
         {"paper_id": paper_id, "user_id": user["user_id"]},
         {
-            "$inc": {"total_seconds": seconds},
+            "$inc": {
+                "total_seconds": seconds,
+                f"daily_seconds.{today_key}": seconds,
+            },
             "$set": {"last_updated": now_iso},
             "$setOnInsert": {
                 "record_id": f"rt_{uuid.uuid4().hex[:12]}",
@@ -2332,22 +2158,76 @@ async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)
         {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
     )
     return {"total_seconds": (doc or {}).get("total_seconds", 0)}
+
 # ============================================================
 # Drafts
 # ============================================================
+
+# ============================================================
+# Drafts
+# ============================================================
+
+@api_router.post("/drafts")
+async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
+    try:
+        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
+
+        # Check if draft already exists
+        existing = await db.drafts.find_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id
+        })
+
+        if existing:
+            # Remove draft
+            result = await db.drafts.delete_one({
+                "user_id": user["user_id"], 
+                "paper_id": req.paper_id
+            })
+            logger.info(f"Drafts - Removed draft for {req.paper_id}")
+            return {"saved": False}
+        else:
+            # Create draft with a unique draft_id
+            draft_doc = {
+                "draft_id": f"draft_{uuid.uuid4().hex[:12]}",
+                "user_id": user["user_id"],
+                "paper_id": req.paper_id,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            result = await db.drafts.insert_one(draft_doc)
+            logger.info(f"Drafts - Saved draft for {req.paper_id} with id: {result.inserted_id}")
+            return {"saved": True}
+            
+    except Exception as e:
+        logger.error(f"Drafts error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update draft: {str(e)}")
+
+@api_router.delete("/drafts/{paper_id}")
+async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
+    try:
+        result = await db.drafts.delete_one({
+            "user_id": user["user_id"], 
+            "paper_id": paper_id
+        })
+        if result.deleted_count == 0:
+            logger.warning(f"Drafts - No draft found for paper {paper_id}")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/drafts")
 async def list_drafts(user: dict = Depends(get_current_user)):
     try:
         drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
-        
+
         if not drafts:
             return []
-            
+
         ids = [d["paper_id"] for d in drafts]
         papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
         pmap = {p["paper_id"]: p for p in papers}
-        
+
         result = []
         for d in drafts:
             pp = pmap.get(d["paper_id"])
@@ -2373,26 +2253,115 @@ async def list_drafts(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"List drafts error: {e}")
         return []
+# ============================================================
+# Generate Video from Highlighted Text
+# ============================================================
+
+class HighlightVideoRequest(BaseModel):
+    text: str  # The highlighted text from the PDF
+    context: Optional[str] = None  # Optional surrounding context
+
+@api_router.post("/papers/{paper_id}/video/highlight")
+async def generate_video_from_highlight(paper_id: str, req: HighlightVideoRequest, user: dict = Depends(get_current_user)):
+    """
+    Generate a video solution based on the highlighted text from the PDF
+    """
+    # Get the paper for context
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    # Check cache for this specific highlight.
+    # NOTE: uses hashlib, not Python's built-in hash() — str hashing is
+    # randomized per-process (PYTHONHASHSEED) for security reasons, so
+    # hash(req.text) produced a different cache_key after every server
+    # restart, silently orphaning all previously cached entries. sha256
+    # is stable across restarts.
+    text_hash = hashlib.sha256(req.text.encode("utf-8")).hexdigest()[:16]
+    cache_key = f"{paper_id}_{text_hash}"
+    cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
+    if cached:
+        return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
+
+    # Get the paper text for context
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    full_text = extract_pdf_text(data, max_chars=3000)
+
+    system = (
+        "You are a master teacher creating a narrated video lesson that solves a specific "
+        "exam question that a student has highlighted. Return STRICT JSON only, "
+        "with no reasoning or thinking text before or after it."
+    )
+
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"STUDENT HIGHLIGHTED THIS TEXT:\n{req.text}\n\n"
+        f"PAPER CONTEXT (for reference):\n{full_text[:1500]}\n\n"
+        "Create a video walkthrough that solves the question or explains the concept "
+        "the student highlighted. If it's a question, solve it step by step. "
+        "If it's a concept, explain it clearly with examples. "
+        "Return JSON: {\"title\":\"...\",\"question\":\"...\","
+        "\"scenes\":[{\"heading\":\"Step title\","
+        "\"board\":[\"line shown on whiteboard\",\"another line\"],"
+        "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
+        "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
+    )
+
+    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
+
+    # Was: a single chat.send_message() call with no retry, so any one
+    # non-JSON reply from a free model (or the whole model chain being
+    # down) turned straight into a 502 with no way to tell which had
+    # happened. _ask_ai_for_json retries once with a stronger reminder,
+    # and logs the actual raw response on failure.
+    try:
+        parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
+        raw_scenes = parsed["scenes"]
+    except Exception as e:
+        logger.error(f"Highlight video generation failed for paper {paper_id}: {e}")
+        raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
+
+    scenes = []
+    for i, sc in enumerate(raw_scenes[:8]):
+        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+        scenes.append({
+            "heading": sc.get("heading", f"Step {i+1}"),
+            "board": sc.get("board", []),
+            "narration": narration,
+            "audio": "",
+        })
+
+    doc = {
+        "cache_key": cache_key,
+        "paper_id": paper_id,
+        "title": parsed.get("title", f"Solution for highlighted text"),
+        "question": parsed.get("question", req.text[:200]),
+        "scenes": scenes,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.highlight_video_cache.insert_one(dict(doc))
+
+    return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
     try:
         logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
-        
+
         paper = await db.papers.find_one({"paper_id": req.paper_id})
         if not paper:
             logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
-        
+
         existing = await db.drafts.find_one({
-            "user_id": user["user_id"], 
+            "user_id": user["user_id"],
             "paper_id": req.paper_id
         })
-        
+
         if existing:
             await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
             logger.info(f"Drafts - Removed draft for {req.paper_id}")
             return {"saved": False}
-        
+
         await db.drafts.insert_one({
             "user_id": user["user_id"],
             "paper_id": req.paper_id,
