@@ -250,9 +250,6 @@
 
 
 
-
-
-
 // pages/AITutor.tsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API } from "../lib/api";
@@ -263,7 +260,8 @@ import {
 import { Button } from "../components/ui/button";
 import {
     Bot, Send, Sparkles, Calculator, BookOpen, CalendarClock, ListChecks, Layers, FileText, User,
-    Menu, X, Plus, Trash2, Clock, ChevronRight, Loader2,
+    Menu, X, Plus, Trash2, Clock, ChevronRight, Loader2, Pin, PinOff, Mic, MicOff,
+    Upload, Image, File, Paperclip, StopCircle,
 } from "lucide-react";
 import Markdown from "../components/Markdown";
 
@@ -291,10 +289,13 @@ export default function AITutor() {
     const [loadingSessions, setLoadingSessions] = useState(true);
     const [isNewChat, setIsNewChat] = useState(true);
     const [titleGenerated, setTitleGenerated] = useState(false);
+    const [isRecording, setIsRecording] = useState(false);
+    const [uploading, setUploading] = useState(false);
     const scrollRef = useRef(null);
     const abortRef = useRef(null);
     const sidebarRef = useRef(null);
     const inputRef = useRef(null);
+    const recognitionRef = useRef(null);
 
     // Load chat sessions
     const loadSessions = useCallback(async () => {
@@ -304,7 +305,13 @@ export default function AITutor() {
             });
             if (res.ok) {
                 const data = await res.json();
-                setSessions(data);
+                // Sort: pinned first, then by updated_at
+                const sorted = data.sort((a, b) => {
+                    if (a.pinned && !b.pinned) return -1;
+                    if (!a.pinned && b.pinned) return 1;
+                    return new Date(b.updated_at) - new Date(a.updated_at);
+                });
+                setSessions(sorted);
             }
         } catch (error) {
             console.error("Failed to load sessions:", error);
@@ -325,56 +332,162 @@ export default function AITutor() {
         return () => abortRef.current?.abort();
     }, []);
 
-    // Generate title using a separate API call
+    // Auto-resize textarea
+    useEffect(() => {
+        if (inputRef.current) {
+            inputRef.current.style.height = "auto";
+            inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 200) + "px";
+        }
+    }, [input]);
+
+    // ============================================================
+    // Toggle Pin
+    // ============================================================
+    const togglePin = async (sessionId, e) => {
+        e.stopPropagation();
+        try {
+            const session = sessions.find(s => s.session_id === sessionId);
+            const newPinned = !session?.pinned;
+
+            await fetch(`${API}/ai/sessions/${sessionId}/pin`, {
+                method: "PUT",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pinned: newPinned }),
+            });
+
+            setSessions(prev => {
+                const updated = prev.map(s =>
+                    s.session_id === sessionId ? { ...s, pinned: newPinned } : s
+                );
+                // Re-sort: pinned first
+                return updated.sort((a, b) => {
+                    if (a.pinned && !b.pinned) return -1;
+                    if (!a.pinned && b.pinned) return 1;
+                    return new Date(b.updated_at) - new Date(a.updated_at);
+                });
+            });
+        } catch (error) {
+            console.error("Failed to toggle pin:", error);
+        }
+    };
+
+    // ============================================================
+    // Speech Recognition
+    // ============================================================
+    const toggleRecording = () => {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+            return;
+        }
+
+        if (isRecording) {
+            stopRecording();
+        } else {
+            startRecording();
+        }
+    };
+
+    const startRecording = () => {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.lang = 'en-US';
+        recognitionRef.current.continuous = false;
+        recognitionRef.current.interimResults = true;
+
+        recognitionRef.current.onresult = (event) => {
+            let transcript = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                transcript += event.results[i][0].transcript;
+            }
+            setInput(transcript);
+        };
+
+        recognitionRef.current.onerror = (event) => {
+            console.error("Speech recognition error:", event.error);
+            setIsRecording(false);
+        };
+
+        recognitionRef.current.onend = () => {
+            setIsRecording(false);
+        };
+
+        recognitionRef.current.start();
+        setIsRecording(true);
+    };
+
+    const stopRecording = () => {
+        if (recognitionRef.current) {
+            recognitionRef.current.stop();
+        }
+        setIsRecording(false);
+    };
+
+    // ============================================================
+    // File Upload
+    // ============================================================
+    const handleFileUpload = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setUploading(true);
+        const reader = new FileReader();
+
+        reader.onload = async (event) => {
+            try {
+                let content = event.target?.result;
+                let message = "";
+
+                if (file.type.startsWith('image/')) {
+                    // For images, use base64
+                    message = `[Image uploaded: ${file.name}]\n\nPlease analyze this image and extract any text or solve any problem shown in it.`;
+                } else if (file.type === 'application/pdf') {
+                    // For PDFs, we need to send to backend for extraction
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    const res = await fetch(`${API}/upload/pdf`, {
+                        method: 'POST',
+                        credentials: 'include',
+                        body: formData,
+                    });
+
+                    if (res.ok) {
+                        const data = await res.json();
+                        message = `[PDF uploaded: ${file.name}]\n\nExtracted text:\n${data.text}\n\nPlease help me with this content.`;
+                    } else {
+                        message = `[PDF uploaded: ${file.name}]\n\nPlease help me analyze this PDF content.`;
+                    }
+                } else if (file.type.startsWith('text/')) {
+                    content = await file.text();
+                    message = `[File uploaded: ${file.name}]\n\nContent:\n${content}\n\nPlease help me with this.`;
+                } else {
+                    message = `[File uploaded: ${file.name}]\n\nPlease help me analyze this file.`;
+                }
+
+                setInput(message);
+                setUploading(false);
+            } catch (error) {
+                console.error("File upload error:", error);
+                setUploading(false);
+                alert("Failed to process file. Please try again.");
+            }
+        };
+
+        reader.readAsDataURL(file);
+        e.target.value = '';
+    };
+
+    // ============================================================
+    // Generate Title
+    // ============================================================
     const generateTitle = useCallback(async (sessionId, message) => {
         try {
-            // Use a simple approach: take first few words or use AI
             const words = message.split(" ");
             let title = words.slice(0, 5).join(" ");
             if (title.length > 40) title = title.slice(0, 40) + "...";
             if (title.length < 3) title = "New Chat";
 
-            // Try to get a better title from AI
-            try {
-                const res = await fetch(`${API}/ai/chat`, {
-                    method: "POST",
-                    credentials: "include",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        message: `Generate a very short title (3-5 words, no quotes) for this conversation: "${message}"`,
-                        subject: "General",
-                        session_id: null,
-                    }),
-                });
-                if (res.ok) {
-                    const reader = res.body?.getReader();
-                    const decoder = new TextDecoder();
-                    let responseText = "";
-                    while (reader) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        responseText += decoder.decode(value, { stream: true });
-                    }
-                    // Extract the response from SSE format
-                    const lines = responseText.split("\n");
-                    for (const line of lines) {
-                        if (line.startsWith("data: ")) {
-                            try {
-                                const data = JSON.parse(line.replace("data: ", ""));
-                                if (data.delta) {
-                                    title = data.delta.trim().replace(/["']/g, "");
-                                    if (title.length > 40) title = title.slice(0, 40) + "...";
-                                    break;
-                                }
-                            } catch { }
-                        }
-                    }
-                }
-            } catch (e) {
-                console.log("AI title generation failed, using fallback");
-            }
-
-            // Update the session title in the database
             await fetch(`${API}/ai/sessions/${sessionId}/title`, {
                 method: "PUT",
                 credentials: "include",
@@ -382,17 +495,25 @@ export default function AITutor() {
                 body: JSON.stringify({ title }),
             });
 
-            // Update sessions list
-            setSessions(prev => prev.map(s =>
-                s.session_id === sessionId ? { ...s, title } : s
-            ));
+            setSessions(prev => {
+                const exists = prev.some(s => s.session_id === sessionId);
+                if (exists) {
+                    return prev.map(s =>
+                        s.session_id === sessionId ? { ...s, title, updated_at: new Date().toISOString() } : s
+                    );
+                }
+                return [
+                    { session_id: sessionId, title, updated_at: new Date().toISOString(), subject: subject },
+                    ...prev
+                ];
+            });
 
             return title;
         } catch (error) {
             console.error("Failed to generate title:", error);
             return message.slice(0, 30);
         }
-    }, []);
+    }, [subject]);
 
     const createNewChat = () => {
         setMessages([]);
@@ -542,12 +663,9 @@ export default function AITutor() {
                 return;
             }
 
-            // Auto-generate title for new chat
             if (isNewChat && newSessionId && !titleGenerated) {
                 setTitleGenerated(true);
                 await generateTitle(newSessionId, msg);
-                // Reload sessions to get updated list
-                await loadSessions();
             }
 
         } catch (err) {
@@ -579,7 +697,7 @@ export default function AITutor() {
     return (
         <div className="flex h-[calc(100vh-4rem)] overflow-hidden relative">
             {/* ============================================================
-                SIDEBAR - ChatGPT style
+                SIDEBAR
                 ============================================================ */}
             <div
                 ref={sidebarRef}
@@ -589,7 +707,6 @@ export default function AITutor() {
                     flex flex-col
                 `}
             >
-                {/* Sidebar Header */}
                 <div className="p-4 border-b border-border flex items-center justify-between">
                     <div className="flex items-center gap-2">
                         <Bot className="h-5 w-5 text-primary" />
@@ -603,7 +720,6 @@ export default function AITutor() {
                     </button>
                 </div>
 
-                {/* Session List */}
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     <button
                         onClick={createNewChat}
@@ -639,9 +755,12 @@ export default function AITutor() {
                                     }`}
                             >
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-medium truncate">
-                                        {s.title || "Untitled Chat"}
-                                    </p>
+                                    <div className="flex items-center gap-1.5">
+                                        {s.pinned && <Pin className="h-3 w-3 text-primary shrink-0" />}
+                                        <p className="text-sm font-medium truncate">
+                                            {s.title || "Untitled Chat"}
+                                        </p>
+                                    </div>
                                     <p className="text-xs text-muted-foreground flex items-center gap-1">
                                         <Clock className="h-3 w-3" />
                                         {formatDate(s.updated_at)}
@@ -652,18 +771,29 @@ export default function AITutor() {
                                         )}
                                     </p>
                                 </div>
-                                <button
-                                    onClick={(e) => deleteChat(s.session_id, e)}
-                                    className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
-                                >
-                                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
-                                </button>
+                                <div className="flex items-center gap-0.5">
+                                    <button
+                                        onClick={(e) => togglePin(s.session_id, e)}
+                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-secondary rounded transition-all"
+                                    >
+                                        {s.pinned ? (
+                                            <PinOff className="h-3.5 w-3.5 text-primary" />
+                                        ) : (
+                                            <Pin className="h-3.5 w-3.5 text-muted-foreground" />
+                                        )}
+                                    </button>
+                                    <button
+                                        onClick={(e) => deleteChat(s.session_id, e)}
+                                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
+                                    >
+                                        <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
+                                    </button>
+                                </div>
                             </button>
                         ))
                     )}
                 </div>
 
-                {/* Sidebar Footer */}
                 <div className="p-4 border-t border-border">
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <User className="h-3.5 w-3.5" />
@@ -708,14 +838,16 @@ export default function AITutor() {
                         )}
                     </div>
 
-                    <Select value={subject} onValueChange={setSubject}>
-                        <SelectTrigger className="w-36 h-8 text-xs" data-testid="ai-subject">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
-                        </SelectContent>
-                    </Select>
+                    <div className="flex items-center gap-2">
+                        <Select value={subject} onValueChange={setSubject}>
+                            <SelectTrigger className="w-36 h-8 text-xs" data-testid="ai-subject">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                            </SelectContent>
+                        </Select>
+                    </div>
                 </div>
 
                 {/* Messages */}
@@ -787,44 +919,92 @@ export default function AITutor() {
 
                 {/* Input Area */}
                 <div className="sticky bottom-0 bg-background/80 backdrop-blur border-t border-border p-4">
-                    <div className="max-w-4xl mx-auto flex items-end gap-2 rounded-xl border border-border bg-card p-2">
-                        <textarea
-                            ref={inputRef}
-                            data-testid="ai-input"
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault();
-                                    send();
-                                }
-                            }}
-                            placeholder="Ask GC AI anything about your subjects…"
-                            className="flex-1 bg-transparent px-3 py-2 text-sm focus:outline-none resize-none min-h-[40px] max-h-[200px]"
-                            rows={1}
-                            style={{ height: "auto" }}
-                            onInput={(e) => {
-                                const target = e.target;
-                                target.style.height = "auto";
-                                target.style.height = Math.min(target.scrollHeight, 200) + "px";
-                            }}
-                        />
-                        <Button
-                            onClick={() => send()}
-                            disabled={streaming || !input.trim()}
-                            data-testid="ai-send-btn"
-                            size="icon"
-                            className="shadow-glow shrink-0"
-                        >
-                            {streaming ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                                <Send className="h-4 w-4" />
-                            )}
-                        </Button>
-                    </div>
-                    <div className="max-w-4xl mx-auto mt-1.5 text-[10px] text-muted-foreground text-center">
-                        GC AI can make mistakes. Always verify important information.
+                    <div className="max-w-4xl mx-auto flex flex-col gap-2">
+                        <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-2">
+                            {/* File Upload Button */}
+                            <div className="relative">
+                                <button
+                                    className="p-2 hover:bg-secondary rounded-lg transition-colors text-muted-foreground hover:text-foreground"
+                                    disabled={uploading}
+                                    title="Upload file (image, PDF, text)"
+                                >
+                                    {uploading ? (
+                                        <Loader2 className="h-5 w-5 animate-spin" />
+                                    ) : (
+                                        <Paperclip className="h-5 w-5" />
+                                    )}
+                                </button>
+                                <input
+                                    type="file"
+                                    accept="image/*,.pdf,.txt,.md"
+                                    onChange={handleFileUpload}
+                                    className="absolute inset-0 opacity-0 cursor-pointer"
+                                    disabled={uploading}
+                                />
+                            </div>
+
+                            {/* Voice Recording Button */}
+                            <button
+                                onClick={toggleRecording}
+                                className={`p-2 rounded-lg transition-colors ${isRecording
+                                    ? "bg-red-500/20 text-red-500 animate-pulse"
+                                    : "hover:bg-secondary text-muted-foreground hover:text-foreground"
+                                    }`}
+                                title={isRecording ? "Stop recording" : "Start voice recording"}
+                            >
+                                {isRecording ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                            </button>
+
+                            {/* Text Input */}
+                            <textarea
+                                ref={inputRef}
+                                data-testid="ai-input"
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                        e.preventDefault();
+                                        send();
+                                    }
+                                }}
+                                placeholder={isRecording ? "Listening..." : "Ask GC AI anything about your subjects…"}
+                                className="flex-1 bg-transparent px-2 py-2 text-sm focus:outline-none resize-none min-h-[40px] max-h-[200px]"
+                                rows={1}
+                                disabled={isRecording}
+                            />
+
+                            {/* Send Button */}
+                            <Button
+                                onClick={() => send()}
+                                disabled={streaming || (!input.trim() && !isRecording)}
+                                data-testid="ai-send-btn"
+                                size="icon"
+                                className="shadow-glow shrink-0"
+                            >
+                                {streaming ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <Send className="h-4 w-4" />
+                                )}
+                            </Button>
+                        </div>
+
+                        {isRecording && (
+                            <div className="flex items-center gap-2 text-xs text-red-500 animate-pulse">
+                                <div className="h-2 w-2 rounded-full bg-red-500" />
+                                Recording... Speak now
+                                <button
+                                    onClick={stopRecording}
+                                    className="ml-auto text-muted-foreground hover:text-foreground"
+                                >
+                                    <StopCircle className="h-4 w-4" />
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="max-w-4xl mx-auto mt-1.5 text-[10px] text-muted-foreground text-center">
+                            GC AI can make mistakes. Always verify important information.
+                        </div>
                     </div>
                 </div>
             </div>

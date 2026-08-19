@@ -1536,6 +1536,52 @@ async def update_session_title(session_id: str, request: Request, user: dict = D
 
 
 
+# ============================================================
+# AI Tutor - Additional Endpoints
+# ============================================================
+
+@api_router.put("/ai/sessions/{session_id}/pin")
+async def toggle_pin_session(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    try:
+        body = await request.json()
+        pinned = body.get("pinned", False)
+        
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"pinned": pinned, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        return {"ok": True, "pinned": pinned}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Toggle pin error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/upload/pdf")
+async def upload_pdf(request: Request, user: dict = Depends(get_current_user)):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+        
+        content = await file.read()
+        reader = PdfReader(io.BytesIO(content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+        
+        return {"text": text[:5000], "filename": file.filename}
+    except Exception as e:
+        logger.error(f"PDF upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 @api_router.get("/leaderboard")
 async def leaderboard(user: dict = Depends(get_current_user)):
