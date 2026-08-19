@@ -506,13 +506,13 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
                 {/* Captions — shows the narration text being spoken, so
                     it's obvious the voiceover is working even before
                     audio kicks in, and helps anyone reading with sound off */}
-                {showCaptions && hasNarrationText && (
+                {/* {showCaptions && hasNarrationText && (
                     <div className="absolute bottom-20 left-4 right-4 z-10 text-center">
                         <p className="inline-block bg-black/60 text-slate-100 text-xs md:text-sm px-3 py-1.5 rounded-lg leading-snug">
                             {scene.narration}
                         </p>
                     </div>
-                )}
+                )} */}
 
                 {/* Progress bar on video */}
                 {hasAnyAudio && !audioError && (
@@ -699,3 +699,31 @@ function formatTime(seconds) {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
