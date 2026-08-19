@@ -887,8 +887,6 @@
 
 
 
-
-
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -909,6 +907,39 @@ import { toast } from "sonner";
 // PDF worker version
 const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
+// ============================================================
+// Helper: light normalization of AI responses before Markdown rendering
+// ============================================================
+// The backend prompt now asks the AI directly for clean, structured
+// Markdown (headings, numbered **Step N:** lines, LaTeX math, a boxed
+// final answer) — see MATH_FORMATTING_INSTRUCTIONS on the server. So
+// this only needs to fix delimiter syntax the model might still use
+// interchangeably, not rewrite the AI's structure or wording.
+//
+// Previously this also force-bolded keywords like "Step"/"Given" with
+// regex and collapsed spacing around "=" signs. That fought with the
+// AI's own Markdown (e.g. turning "**Step 1:**" into "****Step** 1:**")
+// and risked corrupting LaTeX spacing, so it's been removed — the
+// prompt-level formatting instructions are the real fix, not
+// after-the-fact regex patching.
+function preprocessAIResponse(text) {
+    if (!text) return "";
+
+    let processed = text;
+
+    // Collapse excessive blank lines
+    processed = processed.replace(/\n{3,}/g, '\n\n');
+
+    // remark-math expects $...$ / $$...$$ — normalize \( \) and \[ \]
+    // in case the model still emits LaTeX-style delimiters.
+    processed = processed.replace(/\\\[/g, '$$');
+    processed = processed.replace(/\\\]/g, '$$');
+    processed = processed.replace(/\\\(/g, '$');
+    processed = processed.replace(/\\\)/g, '$');
+
+    return processed.trim();
+}
 
 // ============================================================
 // Active reading timer
@@ -951,7 +982,10 @@ function useActiveReadingTimer(paperId) {
             const body = JSON.stringify({ seconds });
 
             if (useBeacon && navigator.sendBeacon) {
-                navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
+                // "text/plain" avoids a CORS preflight that a beacon can't
+                // perform — FastAPI still parses the body as JSON regardless
+                // of the declared content-type.
+                navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
                 setLastSavedAt(Date.now());
                 return;
             }
@@ -1047,12 +1081,7 @@ export default function PaperReader() {
         setShowAskButton(false);
         try {
             const { data } = await api.post("/papers/ask", { paper_id: paperId, question });
-            // Clean up the answer - remove extra spaces and format properly
-            const cleanAnswer = data.answer
-                .replace(/\n{3,}/g, '\n\n') // Remove excessive newlines
-                .replace(/\s+/g, ' ') // Replace multiple spaces with single
-                .trim();
-            setAskAnswer(cleanAnswer);
+            setAskAnswer(preprocessAIResponse(data.answer));
         } catch {
             setAskAnswer("Sorry, I couldn't solve that. Please try again.");
         }
@@ -1214,7 +1243,7 @@ export default function PaperReader() {
                         </div>
                     </div>
 
-                    {/* Highlight ask answer - with structured Markdown */}
+                    {/* Highlight ask answer - with structured Markdown + LaTeX */}
                     {askOpen && (
                         <div
                             ref={answerRef}
@@ -1242,8 +1271,10 @@ export default function PaperReader() {
                                     Solving…
                                 </div>
                             ) : (
-                                <div className="max-h-[50vh] overflow-y-auto pr-1 prose prose-sm dark:prose-invert max-w-none">
-                                    <Markdown>{askAnswer}</Markdown>
+                                <div className="max-h-[50vh] overflow-y-auto pr-1">
+                                    <Markdown className="prose prose-sm dark:prose-invert max-w-none">
+                                        {askAnswer}
+                                    </Markdown>
                                 </div>
                             )}
                             <div className="mt-3 pt-3 border-t border-border flex justify-end">

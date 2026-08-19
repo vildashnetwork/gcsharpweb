@@ -43,32 +43,65 @@
 
 
 
-
-
-
-
-
-// components/Markdown.jsx
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import remarkBreaks from 'remark-breaks';
 import rehypeRaw from 'rehype-raw';
+import rehypeKatex from 'rehype-katex';
 import rehypeSanitize from 'rehype-sanitize';
+import { defaultSchema } from 'hast-util-sanitize';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import 'katex/dist/katex.min.css';
+
+// ============================================================
+// Sanitize schema
+// ============================================================
+// rehype-sanitize's default schema doesn't know about the tags/attributes
+// KaTeX renders (MathML elements, the SVG glyphs it draws for things like
+// \boxed, and the className/style it uses for layout). Without extending
+// the schema, sanitize would strip all of that back out right after
+// rehype-katex renders it, and every equation would come out blank.
+const katexSchema = {
+    ...defaultSchema,
+    tagNames: [
+        ...(defaultSchema.tagNames || []),
+        'math', 'semantics', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub', 'msubsup',
+        'mfrac', 'msqrt', 'mroot', 'mtable', 'mtr', 'mtd', 'mtext', 'mspace',
+        'mstyle', 'annotation', 'mover', 'munder', 'munderover', 'mpadded',
+        'merror', 'mphantom', 'menclose', 'mmultiscripts', 'mprescripts', 'none',
+        'svg', 'path', 'g', 'line',
+    ],
+    attributes: {
+        ...defaultSchema.attributes,
+        '*': [...new Set([...(defaultSchema.attributes?.['*'] || []), 'className', 'style'])],
+        span: [...new Set([...(defaultSchema.attributes?.span || []), 'style'])],
+        svg: ['xmlns', 'width', 'height', 'viewBox', 'preserveAspectRatio', 'style', 'focusable', 'role'],
+        path: ['d', 'fill', 'stroke', 'strokeWidth'],
+        line: ['x1', 'y1', 'x2', 'y2', 'strokeWidth'],
+        annotation: ['encoding'],
+        math: ['xmlns', 'display'],
+    },
+};
 
 export default function Markdown({ children, className = "" }) {
     return (
         <div className={`markdown-body ${className}`}>
             <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                remarkPlugins={[remarkGfm, remarkMath, remarkBreaks]}
+                rehypePlugins={[
+                    rehypeRaw,
+                    [rehypeKatex, { output: 'mathmlAndHtml', strict: false }],
+                    [rehypeSanitize, katexSchema]
+                ]}
                 components={{
                     // Headings with better spacing
                     h1: ({ node, ...props }) => (
-                        <h1 className="text-2xl font-bold mt-6 mb-3 pb-2 border-b border-border" {...props} />
+                        <h1 className="text-2xl font-bold mt-6 mb-3 pb-2 border-b border-border text-foreground" {...props} />
                     ),
                     h2: ({ node, ...props }) => (
-                        <h2 className="text-xl font-bold mt-5 mb-3 pb-1.5 border-b border-border/50" {...props} />
+                        <h2 className="text-xl font-bold mt-5 mb-3 pb-1.5 border-b border-border/50 text-foreground" {...props} />
                     ),
                     h3: ({ node, ...props }) => (
                         <h3 className="text-lg font-semibold mt-4 mb-2 text-foreground" {...props} />
@@ -85,7 +118,7 @@ export default function Markdown({ children, className = "" }) {
 
                     // Paragraphs with better readability
                     p: ({ node, ...props }) => (
-                        <p className="mb-3 leading-relaxed text-foreground/90" {...props} />
+                        <p className="mb-3 leading-relaxed text-foreground/90 whitespace-pre-line" {...props} />
                     ),
 
                     // Lists with better spacing
