@@ -2157,6 +2157,111 @@ async def list_drafts(user: dict = Depends(get_current_user)):
         logger.error(f"List drafts error: {e}")
         return []
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+# Generate Video from Highlighted Text
+# ============================================================
+
+class HighlightVideoRequest(BaseModel):
+    text: str  # The highlighted text from the PDF
+    context: Optional[str] = None  # Optional surrounding context
+
+@api_router.post("/papers/{paper_id}/video/highlight")
+async def generate_video_from_highlight(paper_id: str, req: HighlightVideoRequest, user: dict = Depends(get_current_user)):
+    """
+    Generate a video solution based on the highlighted text from the PDF
+    """
+    # Get the paper for context
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    # Check cache for this specific highlight
+    cache_key = f"{paper_id}_{hash(req.text)}"
+    cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
+    if cached:
+        return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
+
+    # Get the paper text for context
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    full_text = extract_pdf_text(data, max_chars=3000)
+    
+    system = (
+        "You are a master teacher creating a narrated video lesson that solves a specific "
+        "exam question that a student has highlighted. Return STRICT JSON only, "
+        "with no reasoning or thinking text before or after it."
+    )
+    
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"STUDENT HIGHLIGHTED THIS TEXT:\n{req.text}\n\n"
+        f"PAPER CONTEXT (for reference):\n{full_text[:1500]}\n\n"
+        "Create a video walkthrough that solves the question or explains the concept "
+        "the student highlighted. If it's a question, solve it step by step. "
+        "If it's a concept, explain it clearly with examples. "
+        "Return JSON: {\"title\":\"...\",\"question\":\"...\","
+        "\"scenes\":[{\"heading\":\"Step title\","
+        "\"board\":[\"line shown on whiteboard\",\"another line\"],"
+        "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
+        "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
+    )
+    
+    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
+    resp = await chat.send_message(prompt)
+    
+    try:
+        parsed = _clean_json(resp)
+        raw_scenes = parsed.get("scenes", [])
+        if not raw_scenes:
+            raise ValueError("empty scenes")
+    except Exception:
+        logger.error(f"Highlight video parse fail: {resp[:200]}")
+        raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
+
+    scenes = []
+    for i, sc in enumerate(raw_scenes[:8]):
+        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+        scenes.append({
+            "heading": sc.get("heading", f"Step {i+1}"),
+            "board": sc.get("board", []),
+            "narration": narration,
+            "audio": "",
+        })
+    
+    doc = {
+        "cache_key": cache_key,
+        "paper_id": paper_id,
+        "title": parsed.get("title", f"Solution for highlighted text"),
+        "question": parsed.get("question", req.text[:200]),
+        "scenes": scenes,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.highlight_video_cache.insert_one(dict(doc))
+    
+    return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
+
+
+
+
+
+
+
+
+
+
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
     try:
