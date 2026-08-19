@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
-    GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X,
+    GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -14,7 +14,7 @@ const NAV = [
     { key: "study", label: "Study Center", icon: BookOpen, path: "/study" },
     { key: "ai", label: "AI Assistant", icon: Bot, path: "/ai" },
     { key: "analytics", label: "Analytics", icon: BarChart3, path: "/analytics" },
-    { key: "lesson-videos", label: "Lesson Videos", icon: BarChart3, path: "/videos" },
+    { key: "lesson-videos", label: "Lesson Videos", icon: Video, path: "/videos" },
     { key: "teacher", label: "Teacher Portal", icon: Presentation, path: "/teacher" },
     { key: "settings", label: "Settings", icon: SettingsIcon, path: "/settings" },
 ];
