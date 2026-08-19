@@ -56,10 +56,8 @@
 //     processed = processed.replace(/([0-9]+)\s*([a-z])/gi, '$1$2');
 
 //     // 7. Ensure math delimiters are properly formatted
-//     // Convert \[ \] to $$ $$ for block math
 //     processed = processed.replace(/\\\[/g, '$$');
 //     processed = processed.replace(/\\\]/g, '$$');
-//     // Convert \( \) to $ $ for inline math
 //     processed = processed.replace(/\\\(/g, '$');
 //     processed = processed.replace(/\\\)/g, '$');
 
@@ -209,6 +207,9 @@
 //         }
 //     }, [askOpen, askAnswer, askLoading]);
 
+//     // ============================================================
+//     // Ask AI - Text-based solution
+//     // ============================================================
 //     const askAI = useCallback(async (question) => {
 //         if (!question || question.length < 3) return;
 //         setAskOpen(true);
@@ -218,7 +219,6 @@
 //         setShowAskButton(false);
 //         try {
 //             const { data } = await api.post("/papers/ask", { paper_id: paperId, question });
-//             // ✅ Preprocess the answer for better readability
 //             const processedAnswer = preprocessAIResponse(data.answer);
 //             setAskAnswer(processedAnswer);
 //         } catch {
@@ -226,6 +226,38 @@
 //         }
 //         finally { setAskLoading(false); }
 //     }, [paperId]);
+
+//     // ============================================================
+//     // Generate Video from highlighted text
+//     // ============================================================
+//     const generateHighlightVideo = useCallback(async (highlightedText) => {
+//         if (!highlightedText || highlightedText.length < 10) {
+//             toast.error("Please select more text to generate a video");
+//             return;
+//         }
+
+//         setVideoLoading(true);
+//         try {
+//             const { data } = await api.post(`/papers/${paperId}/video/highlight`, {
+//                 text: highlightedText,
+//                 context: paper?.subject || "General"
+//             });
+//             setVideo(data);
+//             toast.success(`Generated ${data.scenes?.length || 0} video scenes for your selection`);
+//             // Scroll to video player
+//             setTimeout(() => {
+//                 const videoElement = document.getElementById('video-solution');
+//                 if (videoElement) {
+//                     videoElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+//                 }
+//             }, 300);
+//         } catch (error) {
+//             console.error("Highlight video generation error:", error);
+//             toast.error(error.response?.data?.detail || "AI could not build a video for your selection");
+//         } finally {
+//             setVideoLoading(false);
+//         }
+//     }, [paperId, paper]);
 
 //     // ============================================================
 //     // Custom text selection handler
@@ -257,12 +289,22 @@
 //         };
 //     }, [handleTextSelection]);
 
-//     // Clear selection when clicking the Ask button
+//     // ============================================================
+//     // Handle Ask Click - shows both options
+//     // ============================================================
 //     const handleAskClick = () => {
-
 //         window.location.href = "#answer-section";
 //         if (selectedText) {
 //             askAI(selectedText);
+//             setShowAskButton(false);
+//             window.getSelection()?.removeAllRanges();
+//         }
+//     };
+
+//     const handleGenerateVideoClick = () => {
+//         window.location.href = "#video-solution";
+//         if (selectedText) {
+//             generateHighlightVideo(selectedText);
 //             setShowAskButton(false);
 //             window.getSelection()?.removeAllRanges();
 //         }
@@ -428,9 +470,11 @@
 //                         </div>
 //                     )}
 
-//                     {/* Video player */}
+//                     {/* Video player video-solution video-solution*/}
 //                     {video && (
-//                         <VideoSolutionPlayer scenes={video.scenes} title={video.title} question={video.question} />
+//                         <div id="video-solution">
+//                             <VideoSolutionPlayer scenes={video.scenes} title={video.title} question={video.question} />
+//                         </div>
 //                     )}
 
 //                     {/* QA list */}
@@ -452,7 +496,7 @@
 //             </div>
 
 //             {/* ============================================================
-//                 Ask GC AI — Fixed button at top-right on mobile
+//                 Ask GC AI — Fixed button with TWO options: Ask AI & Generate Video
 //                 ============================================================ */}
 //             {showAskButton && selectedText && (
 //                 <div
@@ -461,18 +505,39 @@
 //                         : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
 //                         }`}
 //                 >
-//                     <button
-//                         onClick={handleAskClick}
-//                         className="pointer-events-auto flex items-center gap-2 rounded-full bg-primary text-white text-sm px-4 py-2.5 shadow-lg hover:bg-primary/90 transition-all active:scale-95"
-//                     >
-//                         <Sparkles className="h-4 w-4" />
-//                         Ask GC AI
-//                         {isMobile && (
-//                             <span className="text-xs opacity-70 ml-1">
-//                                 ({selectedText.length} chars)
-//                             </span>
-//                         )}
-//                     </button>
+//                     {/* ${isMobile ? 'flex-col' : 'flex-row'} */}
+
+//                     <div className={`pointer-events-auto flex
+//                           gap-2 bg-card rounded-xl shadow-2xl flex-col border border-border p-2 min-w-[160px]`}>
+//                         {/* Ask AI Button */}
+//                         <button
+//                             onClick={handleAskClick}
+//                             className="flex items-center gap-2 rounded-lg bg-primary text-white text-sm px-4 py-2.5 hover:bg-primary/90 transition-all active:scale-95 w-full"
+
+//                         >
+//                             <Sparkles className="h-4 w-4" />
+//                             Ask AI
+//                             {isMobile && (
+//                                 <span className="text-[10px] opacity-70 ml-auto">
+//                                     {selectedText.length} chars
+//                                 </span>
+//                             )}
+//                         </button>
+
+//                         {/* Generate Video Button */}
+//                         <button
+//                             onClick={handleGenerateVideoClick}
+//                             disabled={videoLoading}
+//                             className="flex items-center gap-2 rounded-lg bg-secondary text-foreground text-sm px-4 py-2.5 hover:bg-secondary/80 transition-all active:scale-95 border border-border w-full disabled:opacity-50"
+//                         >
+//                             {videoLoading ? (
+//                                 <Loader2 className="h-4 w-4 animate-spin" />
+//                             ) : (
+//                                 <Film className="h-4 w-4 text-primary" />
+//                             )}
+//                             {videoLoading ? 'Generating...' : 'Generate Video'}
+//                         </button>
+//                     </div>
 //                 </div>
 //             )}
 
@@ -486,15 +551,6 @@
 //         </div>
 //     );
 // }
-
-
-
-
-
-
-
-
-
 
 
 
@@ -541,6 +597,165 @@ import { toast } from "sonner";
 // PDF worker version
 const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
+// ============================================================
+// Smart Navigation Module
+// ============================================================
+const SmartNavigation = {
+    // Track if we're currently scrolling to prevent conflicts
+    _isScrolling: false,
+    _scrollTimeout: null,
+
+    /**
+     * Scroll to a section with smart behavior
+     * @param {string|HTMLElement} target - Element ID or DOM element
+     * @param {Object} options - Configuration options
+     */
+    scrollTo: (target, options = {}) => {
+        const {
+            offset = 80,
+            duration = 600,
+            delay = 0,
+            onComplete = null,
+            highlight = true,
+        } = options;
+
+        // Clear any pending scroll
+        if (SmartNavigation._scrollTimeout) {
+            clearTimeout(SmartNavigation._scrollTimeout);
+        }
+
+        SmartNavigation._scrollTimeout = setTimeout(() => {
+            let element = target;
+
+            // If target is a string, find the element by ID
+            if (typeof target === 'string') {
+                element = document.getElementById(target);
+            }
+
+            // If target is a ref, get its current property
+            if (target && target.current) {
+                element = target.current;
+            }
+
+            if (!element) {
+                console.warn('SmartNavigation: Target element not found', target);
+                return;
+            }
+
+            // Get the element position
+            const rect = element.getBoundingClientRect();
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+            const targetPosition = rect.top + scrollTop - offset;
+
+            // Scroll to the element
+            window.scrollTo({
+                top: targetPosition,
+                behavior: 'smooth'
+            });
+
+            // Highlight the element after scrolling
+            if (highlight) {
+                SmartNavigation._highlightElement(element);
+            }
+
+            // Call onComplete callback
+            if (onComplete) {
+                setTimeout(onComplete, duration);
+            }
+
+            SmartNavigation._scrollTimeout = null;
+        }, delay);
+    },
+
+    /**
+     * Highlight an element to draw attention to it
+     */
+    _highlightElement: (element) => {
+        // Remove any existing highlight
+        element.classList.remove('highlight-flash');
+
+        // Force reflow
+        void element.offsetWidth;
+
+        // Add highlight class
+        element.classList.add('highlight-flash');
+
+        // Remove highlight after animation
+        setTimeout(() => {
+            element.classList.remove('highlight-flash');
+        }, 2000);
+    },
+
+    /**
+     * Scroll to answer section with smart behavior
+     */
+    scrollToAnswer: (answerRef, delay = 400) => {
+        SmartNavigation.scrollTo(answerRef, {
+            offset: 80,
+            duration: 600,
+            delay: delay,
+            highlight: true,
+            onComplete: () => {
+                // Focus the answer section for accessibility
+                if (answerRef.current) {
+                    answerRef.current.setAttribute('tabindex', '-1');
+                    answerRef.current.focus({ preventScroll: true });
+                }
+            }
+        });
+    },
+
+    /**
+     * Scroll to video section with smart behavior
+     */
+    scrollToVideo: (videoRef, delay = 500) => {
+        SmartNavigation.scrollTo(videoRef, {
+            offset: 80,
+            duration: 600,
+            delay: delay,
+            highlight: true,
+            onComplete: () => {
+                // Find and focus the video player
+                if (videoRef.current) {
+                    const videoElement = videoRef.current.querySelector('video');
+                    if (videoElement) {
+                        videoElement.focus();
+                    }
+                }
+            }
+        });
+    },
+
+    /**
+     * Scroll to QA section
+     */
+    scrollToQA: (delay = 300) => {
+        SmartNavigation.scrollTo('qa-section', {
+            offset: 80,
+            duration: 600,
+            delay: delay,
+            highlight: true,
+        });
+    }
+};
+
+// Add highlight flash CSS
+const style = document.createElement('style');
+style.textContent = `
+    .highlight-flash {
+        animation: highlightFlash 2s ease;
+    }
+    @keyframes highlightFlash {
+        0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        10% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.5); }
+        20% { box-shadow: 0 0 0 8px rgba(59, 130, 246, 0.3); }
+        40% { box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1); }
+        60% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+`;
+document.head.appendChild(style);
 
 // ============================================================
 // Helper: Preprocess AI response for better Markdown rendering
@@ -690,6 +905,7 @@ export default function PaperReader() {
     const navigate = useNavigate();
     const containerRef = useRef(null);
     const answerRef = useRef(null);
+    const videoRef = useRef(null);
 
     const { displaySeconds, saving } = useActiveReadingTimer(paperId);
 
@@ -720,14 +936,16 @@ export default function PaperReader() {
     // Scroll to answer when it appears
     useEffect(() => {
         if (askOpen && askAnswer && !askLoading) {
-            setTimeout(() => {
-                answerRef.current?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start'
-                });
-            }, 300);
+            SmartNavigation.scrollToAnswer(answerRef, 400);
         }
     }, [askOpen, askAnswer, askLoading]);
+
+    // Scroll to video when it's generated
+    useEffect(() => {
+        if (video && video.scenes && video.scenes.length > 0) {
+            SmartNavigation.scrollToVideo(videoRef, 500);
+        }
+    }, [video]);
 
     // ============================================================
     // Ask AI - Text-based solution
@@ -743,6 +961,11 @@ export default function PaperReader() {
             const { data } = await api.post("/papers/ask", { paper_id: paperId, question });
             const processedAnswer = preprocessAIResponse(data.answer);
             setAskAnswer(processedAnswer);
+
+            // Scroll to answer after a short delay
+            setTimeout(() => {
+                SmartNavigation.scrollToAnswer(answerRef, 300);
+            }, 500);
         } catch {
             setAskAnswer("Sorry, I couldn't solve that. Please try again.");
         }
@@ -766,13 +989,11 @@ export default function PaperReader() {
             });
             setVideo(data);
             toast.success(`Generated ${data.scenes?.length || 0} video scenes for your selection`);
-            // Scroll to video player
+
+            // Scroll to video after generation
             setTimeout(() => {
-                const videoElement = document.getElementById('video-solution');
-                if (videoElement) {
-                    videoElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
-            }, 300);
+                SmartNavigation.scrollToVideo(videoRef, 300);
+            }, 600);
         } catch (error) {
             console.error("Highlight video generation error:", error);
             toast.error(error.response?.data?.detail || "AI could not build a video for your selection");
@@ -812,10 +1033,14 @@ export default function PaperReader() {
     }, [handleTextSelection]);
 
     // ============================================================
-    // Handle Ask Click - shows both options
+    // Handle Ask Click - navigates to answer section
     // ============================================================
     const handleAskClick = () => {
         if (selectedText) {
+            // First, scroll to the answer area to show loading state
+            SmartNavigation.scrollToAnswer(answerRef, 100);
+
+            // Then trigger the AI request
             askAI(selectedText);
             setShowAskButton(false);
             window.getSelection()?.removeAllRanges();
@@ -823,8 +1048,11 @@ export default function PaperReader() {
     };
 
     const handleGenerateVideoClick = () => {
-        window.location.href = "#video-solution";
         if (selectedText) {
+            // First, scroll to the video area to show loading state
+            SmartNavigation.scrollToVideo(videoRef, 100);
+
+            // Then trigger video generation
             generateHighlightVideo(selectedText);
             setShowAskButton(false);
             window.getSelection()?.removeAllRanges();
@@ -849,6 +1077,8 @@ export default function PaperReader() {
         try {
             const { data } = await api.post(`/papers/${paperId}/qa`);
             setQa(data.items);
+            // Scroll to QA section
+            SmartNavigation.scrollToQA(300);
         } catch { toast.error("AI could not solve this paper"); }
         finally { setQaLoading(false); }
     };
@@ -858,6 +1088,8 @@ export default function PaperReader() {
         try {
             const { data } = await api.post(`/papers/${paperId}/video`);
             setVideo(data);
+            // Scroll to video section after generation
+            SmartNavigation.scrollToVideo(videoRef, 500);
         } catch { toast.error("AI could not build a video solution"); }
         finally { setVideoLoading(false); }
     };
@@ -991,16 +1223,20 @@ export default function PaperReader() {
                         </div>
                     )}
 
-                    {/* Video player video-solution video-solution*/}
-                    {video && (
-                        <div id="video-solution">
-                            <VideoSolutionPlayer scenes={video.scenes} title={video.title} question={video.question} />
-                        </div>
-                    )}
+                    {/* Video player */}
+                    <div ref={videoRef} id="video-solution">
+                        {video && (
+                            <VideoSolutionPlayer
+                                scenes={video.scenes}
+                                title={video.title}
+                                question={video.question}
+                            />
+                        )}
+                    </div>
 
                     {/* QA list */}
                     {qa && (
-                        <div className="rounded-xl border border-border bg-card p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+                        <div id="qa-section" className="rounded-xl border border-border bg-card p-5 space-y-4 max-h-[75vh] overflow-y-auto">
                             <p className="font-display font-semibold flex items-center gap-2 sticky top-0 bg-card pb-1"><FileText className="h-4 w-4 text-primary" /> Worked Solutions</p>
                             {qa.map((item, i) => (
                                 <div key={i} className="rounded-lg border border-border bg-secondary/30 p-4">
@@ -1026,15 +1262,12 @@ export default function PaperReader() {
                         : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
                         }`}
                 >
-                    {/* ${isMobile ? 'flex-col' : 'flex-row'} */}
-
                     <div className={`pointer-events-auto flex
                           gap-2 bg-card rounded-xl shadow-2xl flex-col border border-border p-2 min-w-[160px]`}>
                         {/* Ask AI Button */}
                         <button
                             onClick={handleAskClick}
                             className="flex items-center gap-2 rounded-lg bg-primary text-white text-sm px-4 py-2.5 hover:bg-primary/90 transition-all active:scale-95 w-full"
-
                         >
                             <Sparkles className="h-4 w-4" />
                             Ask AI

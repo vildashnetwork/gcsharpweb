@@ -1715,11 +1715,11 @@ export default function StudyCenter() {
                             <span className="hidden xs:inline">Past Papers</span>
                             <span className="xs:hidden">Papers</span>
                         </TabsTrigger>
-                        <TabsTrigger value="papers" data-testid="tab-papers" className="flex-1 sm:flex-none">
+                        {/* <TabsTrigger value="papers" data-testid="tab-papers" className="flex-1 sm:flex-none">
                             <Zap className="h-4 w-4 mr-1.5" />
                             <span className="hidden xs:inline">Quick Practice</span>
                             <span className="xs:hidden">Practice</span>
-                        </TabsTrigger>
+                        </TabsTrigger> */}
                         <TabsTrigger value="videos" data-testid="tab-videos" className="flex-1 sm:flex-none">
                             <PlayCircle className="h-4 w-4 mr-1.5" />
                             <span className="hidden xs:inline">Video Lessons</span>

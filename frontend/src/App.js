@@ -18,6 +18,7 @@ import TeacherPortal from "@/pages/TeacherPortal";
 import Settings from "@/pages/Settings";
 import PhoneSignIn from "@/pages/PhoneNumber";
 import VideoLibrary from "./pages/VideoLibrary";
+import SearchPage from "./pages/SearchPage";
 import { Loader2 } from "lucide-react";
 
 function FullLoader() {
@@ -52,6 +53,7 @@ function AppRouter() {
             <Route path="/" element={<LoginGate />} />
             <Route path="/phone-signin" element={<PhoneSignIn />} />
             <Route path="/onboarding" element={<Onboarding />} />
+            <Route path="/search" element={<Protected><SearchPage /></Protected>} />
             <Route path="/videos" element={<VideoLibrary />} />
             <Route path="/videos/:videoId" element={<VideoLibrary />} />
             <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
