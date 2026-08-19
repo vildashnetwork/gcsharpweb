@@ -918,7 +918,6 @@
 
 
 
-
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -1244,10 +1243,13 @@ function preprocessAIResponse(text) {
     // 13. Ensure proper line breaks after headings
     processed = processed.replace(/(#{1,6}\s+[^\n]+)\n/g, '$1\n\n');
 
-    // 14. Fix special characters
-    processed = processed.replace(g, '≠');
-    processed = processed.replace(/→/g, '→');
-    processed = processed.replace(/⇒/g, '⇒');
+    // 14. (removed) — this used to call processed.replace(g, '≠') with a
+    // corrupted regex literal (a bare, undefined variable `g` instead of
+    // an actual /regex/), which threw "ReferenceError: g is not defined"
+    // on every single AI answer and was the real cause of "Sorry, I
+    // couldn't solve that. Please try again." The → and ⇒ replacements
+    // below were self-replacements (no-ops) already, so nothing of value
+    // was lost by dropping this step.
 
     // 15. Fix markdown bold
     processed = processed.replace(/\*\*([^*]+)\*\*/g, (match, content) => {
