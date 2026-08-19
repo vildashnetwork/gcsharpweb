@@ -4,6 +4,7 @@ import io
 import re
 import json
 import uuid
+import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -1886,6 +1887,49 @@ def _clean_json(text: str):
 
     raise ValueError("Could not extract valid JSON from AI response")
 
+async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retries: int = 1) -> dict:
+    """
+    Sends `prompt` to the model and parses the reply as JSON, retrying (by
+    default once) with a stronger "JSON only" reminder appended to the SAME
+    prompt if the first reply wasn't valid, parseable JSON containing
+    required_key with a truthy value.
+
+    This exists because the free OpenRouter models in the fallback chain
+    sometimes ignore "return ONLY JSON" under load and wrap the answer in
+    commentary or markdown fences. A plain retry usually fixes it — either
+    the model self-corrects, or the fallback chain happens to land on a
+    different, more compliant model this time.
+
+    Note: SimpleLLM.send_message() is single-turn (system + one user
+    message, no conversation history), so the retry re-sends the full
+    original prompt with the reminder appended rather than a short
+    follow-up — a short follow-up alone would lose all context.
+
+    Raises ValueError if still unparseable after all attempts, and logs the
+    last raw response so failures are actually debuggable instead of
+    disappearing into a generic 502.
+    """
+    last_resp = ""
+    for attempt in range(retries + 1):
+        this_prompt = prompt if attempt == 0 else (
+            prompt + "\n\nIMPORTANT: Your previous reply could not be parsed as JSON. "
+            "Reply again with ONLY the JSON object — no markdown code fences, "
+            "no explanation, nothing before or after it."
+        )
+        resp = await chat.send_message(this_prompt)
+        last_resp = resp
+        try:
+            parsed = _clean_json(resp)
+            if parsed.get(required_key):
+                return parsed
+        except Exception:
+            continue
+    logger.error(
+        f"AI JSON generation failed after {retries + 1} attempt(s) for key '{required_key}'. "
+        f"Last raw response (truncated): {last_resp[:500]!r}"
+    )
+    raise ValueError(f"Could not get valid JSON with key '{required_key}' from AI")
+
 # ============================================================
 # Papers Module
 # ============================================================
@@ -2157,20 +2201,6 @@ async def list_drafts(user: dict = Depends(get_current_user)):
         logger.error(f"List drafts error: {e}")
         return []
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ============================================================
 # Generate Video from Highlighted Text
 # ============================================================
@@ -2188,9 +2218,15 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
     p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
     if not p:
         raise HTTPException(status_code=404, detail="Paper not found")
-    
-    # Check cache for this specific highlight
-    cache_key = f"{paper_id}_{hash(req.text)}"
+
+    # Check cache for this specific highlight.
+    # NOTE: uses hashlib, not Python's built-in hash() — str hashing is
+    # randomized per-process (PYTHONHASHSEED) for security reasons, so
+    # hash(req.text) produced a different cache_key after every server
+    # restart, silently orphaning all previously cached entries. sha256
+    # is stable across restarts.
+    text_hash = hashlib.sha256(req.text.encode("utf-8")).hexdigest()[:16]
+    cache_key = f"{paper_id}_{text_hash}"
     cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
     if cached:
         return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
@@ -2198,13 +2234,13 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
     # Get the paper text for context
     data = await fetch_pdf_bytes(p["pdf_url"])
     full_text = extract_pdf_text(data, max_chars=3000)
-    
+
     system = (
         "You are a master teacher creating a narrated video lesson that solves a specific "
         "exam question that a student has highlighted. Return STRICT JSON only, "
         "with no reasoning or thinking text before or after it."
     )
-    
+
     prompt = (
         f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
         f"STUDENT HIGHLIGHTED THIS TEXT:\n{req.text}\n\n"
@@ -2218,17 +2254,19 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
         "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
         "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
     )
-    
+
     chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
-    resp = await chat.send_message(prompt)
-    
+
+    # Was: a single chat.send_message() call with no retry, so any one
+    # non-JSON reply from a free model (or the whole model chain being
+    # down) turned straight into a 502 with no way to tell which had
+    # happened. _ask_ai_for_json retries once with a stronger reminder,
+    # and logs the actual raw response on failure.
     try:
-        parsed = _clean_json(resp)
-        raw_scenes = parsed.get("scenes", [])
-        if not raw_scenes:
-            raise ValueError("empty scenes")
-    except Exception:
-        logger.error(f"Highlight video parse fail: {resp[:200]}")
+        parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
+        raw_scenes = parsed["scenes"]
+    except Exception as e:
+        logger.error(f"Highlight video generation failed for paper {paper_id}: {e}")
         raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
 
     scenes = []
@@ -2240,7 +2278,7 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
             "narration": narration,
             "audio": "",
         })
-    
+
     doc = {
         "cache_key": cache_key,
         "paper_id": paper_id,
@@ -2250,17 +2288,8 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.highlight_video_cache.insert_one(dict(doc))
-    
+
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
-
-
-
-
-
-
-
-
-
 
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):

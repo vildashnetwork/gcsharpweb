@@ -115,20 +115,20 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
             'success': False,
             'error': 'Twilio client not initialized. Check your credentials.'
         }
-    
+
     if not TWILIO_PHONE_NUMBER and not TWILIO_MESSAGING_SERVICE_SID:
         return {
             'success': False,
             'error': 'No sending phone number or messaging service configured.'
         }
-    
+
     try:
         # Format the phone number with country code
         if not to_number.startswith('+'):
             to_number = '+' + to_number
-        
+
         logger.info(f"Sending SMS to: {to_number}")
-        
+
         # Send SMS using messaging service or direct phone number
         if TWILIO_MESSAGING_SERVICE_SID:
             message = twilio_client.messages.create(
@@ -142,7 +142,7 @@ def send_sms_via_twilio(to_number: str, message: str) -> dict:
                 from_=TWILIO_PHONE_NUMBER,
                 to=to_number
             )
-        
+
         logger.info(f"SMS sent successfully. SID: {message.sid}")
         return {
             'success': True,
@@ -208,7 +208,9 @@ class SimpleLLM:
                 {"role": "user", "content": message},
             ],
             "temperature": 0.3,
-            "max_tokens": 1000,
+            # Bumped from 1000 -> 2000: longer worked solutions (mechanics,
+            # multi-step algebra) were getting cut off mid-derivation.
+            "max_tokens": 2000,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -417,6 +419,31 @@ class EmailSignupRequest(BaseModel):
     password: str
 
 # ============================================================
+# Settings Models
+# ============================================================
+
+DEFAULT_SETTINGS = {
+    "autoplay_next": True,
+    "default_playback_speed": 1.0,
+    "default_video_quality": "auto",
+    "captions_enabled": False,
+    "notifications_enabled": True,
+    "email_notifications": True,
+    "theme": "system",       # "light" | "dark" | "system"
+    "language": "en",
+}
+
+class SettingsUpdate(BaseModel):
+    autoplay_next: Optional[bool] = None
+    default_playback_speed: Optional[float] = None
+    default_video_quality: Optional[str] = None
+    captions_enabled: Optional[bool] = None
+    notifications_enabled: Optional[bool] = None
+    email_notifications: Optional[bool] = None
+    theme: Optional[str] = None
+    language: Optional[str] = None
+
+# ============================================================
 # Auth Helpers
 # ============================================================
 
@@ -465,7 +492,7 @@ async def send_phone_otp(req: PhoneLoginRequest):
     try:
         # Generate 6-digit OTP
         otp_code = ''.join([str(uuid.uuid4().int % 10) for _ in range(6)])
-        
+
         # Store OTP in database with expiration (5 minutes)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
         await db.phone_otps.insert_one({
@@ -476,16 +503,16 @@ async def send_phone_otp(req: PhoneLoginRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
             "verified": False
         })
-        
+
         # Format the full phone number
         full_number = f"{req.country_code}{req.phone}"
-        
+
         # Create SMS message
         sms_message = f"Your GCSHARP verification code is: {otp_code}. Valid for 5 minutes."
-        
+
         # Send SMS via Twilio
         result = send_sms_via_twilio(full_number, sms_message)
-        
+
         if result['success']:
             logger.info(f"OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
             return {
@@ -496,10 +523,10 @@ async def send_phone_otp(req: PhoneLoginRequest):
         else:
             # Log the error
             logger.error(f"SMS failed for {full_number}: {result.get('error')}")
-            
+
             # Check if we're in development mode
             env = os.environ.get("ENVIRONMENT", "development")
-            
+
             if env == "development":
                 # In development, return OTP for testing
                 logger.info(f"Development mode: OTP for {full_number} is {otp_code}")
@@ -532,30 +559,30 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
             "otp": req.otp,
             "verified": False
         })
-        
+
         if not otp_record:
             raise HTTPException(status_code=401, detail="Invalid verification code")
-        
+
         # Check expiration
         expires_at = otp_record["expires_at"]
         if isinstance(expires_at, str):
             expires_at = datetime.fromisoformat(expires_at)
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        
+
         if expires_at < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Verification code expired")
-        
+
         # Mark OTP as verified
         await db.phone_otps.update_one(
             {"_id": otp_record["_id"]},
             {"$set": {"verified": True}}
         )
-        
+
         # Find or create user
         phone_full = f"{req.country_code}{req.phone}"
         user = await db.users.find_one({"phone": phone_full}, {"_id": 0})
-        
+
         if not user:
             # Create new user
             user_id = f"user_{uuid.uuid4().hex[:12]}"
@@ -582,7 +609,7 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.users.insert_one(dict(user))
-        
+
         # Create session
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -592,18 +619,18 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
+
         user.pop("_id", None)
         user.pop("password", None)
         return {
-            "success": True, 
+            "success": True,
             "user": user,
             "session_token": session_token
         }
@@ -623,7 +650,7 @@ async def email_register(req: EmailSignupRequest):
         existing = await db.users.find_one({"email": req.email})
         if existing:
             raise HTTPException(status_code=400, detail="Email already registered")
-        
+
         # Create user
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         user = {
@@ -650,10 +677,10 @@ async def email_register(req: EmailSignupRequest):
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(dict(user))
-        
+
         user.pop("_id", None)
         user.pop("password", None)
-        
+
         return {"success": True, "user": user}
     except HTTPException:
         raise
@@ -668,11 +695,11 @@ async def email_login(req: EmailLoginRequest, response: Response):
         user = await db.users.find_one({"email": req.email}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         # In production, use proper password hashing!
         if user.get("password") != req.password:
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        
+
         # Create session
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -682,19 +709,19 @@ async def email_login(req: EmailLoginRequest, response: Response):
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
+
         user.pop("_id", None)
         user.pop("password", None)
-        
+
         return {
-            "success": True, 
+            "success": True,
             "user": user,
             "session_token": session_token
         }
@@ -769,7 +796,6 @@ async def login_user(req: LoginRequest, response: Response):
     return {"success": True, "user": user, "session_token": session_token}
 
 
-
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
     session_id = request.headers.get("X-Session-ID")
@@ -832,52 +858,44 @@ async def process_session(request: Request, response: Response):
     )
     user.pop("_id", None)
     user.pop("password", None)
-    
-    # ✅ Return session_token in the response body
+
     return {
         "user": user,
-        "session_token": session_token  # Add this!
+        "session_token": session_token
     }
 
 
-
-
-
-
-
-
-# Add this new endpoint after your existing auth routes
 @api_router.post("/auth/exchange-session")
 async def exchange_session(request: Request, response: Response):
     """Exchange OAuth session_id for user session with token"""
     try:
         body = await request.json()
         session_id = body.get("sessionId")
-        
+
         if not session_id:
             raise HTTPException(status_code=400, detail="Missing session_id")
-        
+
         logger.info(f"Exchanging session: {session_id}")
-        
+
         # Fetch session data from auth service
         async with httpx.AsyncClient() as hc:
             r = await hc.get(
                 "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
                 headers={"X-Session-ID": session_id},
             )
-        
+
         if r.status_code != 200:
             raise HTTPException(status_code=401, detail="Auth failed")
-        
+
         data = r.json()
         email = data.get("email")
-        
+
         if not email:
             raise HTTPException(status_code=400, detail="No email in session data")
-        
+
         # Find or create user
         existing = await db.users.find_one({"email": email})
-        
+
         if existing:
             user = existing
             # Remove sensitive fields
@@ -911,31 +929,30 @@ async def exchange_session(request: Request, response: Response):
             await db.users.insert_one(dict(user))
             user.pop("_id", None)
             user.pop("password", None)
-        
+
         # Create session token
         session_token = f"tok_{uuid.uuid4().hex}"
         expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-        
+
         await db.user_sessions.insert_one({
             "user_id": user["user_id"],
             "session_token": session_token,
             "expires_at": expires_at.isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        
+
         # Set cookie
         response.set_cookie(
             key="session_token", value=session_token,
             httponly=True, secure=True, samesite="none", path="/",
             max_age=7 * 24 * 60 * 60,
         )
-        
-        # ✅ Return both user and session_token
+
         return {
             "user": user,
             "session_token": session_token
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -964,6 +981,32 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
     fresh.pop("password", None)
     return fresh
+
+# ============================================================
+# User Settings
+# ============================================================
+# Stored as a nested "settings" object on the user document.
+# GET always returns the full settings shape (defaults merged with
+# whatever the user has actually saved), so the frontend never has
+# to guess about missing keys.
+
+@api_router.get("/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    stored = user.get("settings") or {}
+    return {**DEFAULT_SETTINGS, **stored}
+
+@api_router.put("/settings")
+async def update_settings(payload: SettingsUpdate, user: dict = Depends(get_current_user)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    current = user.get("settings") or {}
+    merged = {**DEFAULT_SETTINGS, **current, **updates}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": merged}})
+    return merged
+
+@api_router.post("/settings/reset")
+async def reset_settings(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": DEFAULT_SETTINGS}})
+    return dict(DEFAULT_SETTINGS)
 
 # ============================================================
 # Exam Structure
@@ -1107,13 +1150,33 @@ async def list_attempts(user: dict = Depends(get_current_user)):
     items = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
+# ============================================================
+# Dashboard Stats
+# ============================================================
+# Study time comes from two sources: quiz-attempt time_spent, and
+# active reading time tracked per-paper in paper_reading_time (see
+# the Reading Time Tracking section below). Each reading-time doc
+# keeps a daily_seconds map (date -> seconds) so the 7-day
+# consistency chart reflects the actual days reading happened on —
+# not just the day of the most recent heartbeat. Older docs written
+# before daily_seconds existed fall back to bucketing by last_updated.
+
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
-    questions_attempted = sum(a["total"] for a in attempts)
-    correct = sum(a["score"] for a in attempts)
+    questions_attempted = sum(a.get("total", 0) for a in attempts)
+    correct = sum(a.get("score", 0) for a in attempts)
     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
-    study_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    reading_docs_full = await db.paper_reading_time.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
+    ).to_list(2000)
+    reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
+
+    study_seconds = attempt_seconds + reading_seconds
     study_hours = round(study_seconds / 3600, 1)
 
     weak_counter, strong_counter = {}, {}
@@ -1127,6 +1190,8 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 
     now = datetime.now(timezone.utc)
     week = [0] * 7
+
+    # Attempt minutes per day
     for a in attempts:
         try:
             d = datetime.fromisoformat(a["created_at"])
@@ -1137,6 +1202,29 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
         except Exception:
             pass
+
+    # Reading minutes per day — prefer the daily_seconds breakdown;
+    # fall back to bucketing by last_updated for older docs that
+    # predate daily_seconds.
+    for d_doc in reading_docs_full:
+        daily = d_doc.get("daily_seconds") or {}
+        if daily:
+            for i in range(7):
+                day_key = (now.date() - timedelta(days=i)).isoformat()
+                secs = daily.get(day_key, 0)
+                if secs:
+                    week[6 - i] += round(secs / 60)
+        elif d_doc.get("last_updated"):
+            try:
+                d = datetime.fromisoformat(d_doc["last_updated"])
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=timezone.utc)
+                delta = (now.date() - d.date()).days
+                if 0 <= delta < 7:
+                    week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
+            except Exception:
+                pass
+
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_today = now.weekday()
     consistency = []
@@ -1146,6 +1234,7 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 
     return {
         "study_hours": study_hours,
+        "study_seconds": study_seconds,
         "questions_attempted": questions_attempted,
         "accuracy": accuracy,
         "streak": user.get("streak", 0),
@@ -1157,7 +1246,91 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
         "consistency": consistency,
         "total_attempts": len(attempts),
+        "total_papers_viewed": len(reading_docs_full),
     }
+
+# ============================================================
+# AI Tutor - Session Management (title, pin, delete)
+# ============================================================
+
+@api_router.put("/ai/sessions/{session_id}/title")
+async def update_session_title(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Update the title of a chat session"""
+    try:
+        body = await request.json()
+        title = body.get("title", "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return {"ok": True, "title": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update session title error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/ai/sessions/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
+    """Delete a chat session"""
+    try:
+        result = await db.ai_sessions.delete_one(
+            {"session_id": session_id, "user_id": user["user_id"]}
+        )
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.put("/ai/sessions/{session_id}/pin")
+async def toggle_pin_session(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    try:
+        body = await request.json()
+        pinned = body.get("pinned", False)
+
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"pinned": pinned, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return {"ok": True, "pinned": pinned}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Toggle pin error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/upload/pdf")
+async def upload_pdf(request: Request, user: dict = Depends(get_current_user)):
+    try:
+        form = await request.form()
+        file = form.get("file")
+
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+
+        content = await file.read()
+        reader = PdfReader(io.BytesIO(content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+
+        return {"text": text[:5000], "filename": file.filename}
+    except Exception as e:
+        logger.error(f"PDF upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
 # Leaderboard
@@ -1362,7 +1535,7 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
         "video_url": req.video_url,
         "thumbnail": req.thumbnail or "",
         "price": req.price, "duration": req.duration,
-        "views": 0, "earnings": 0, "students": 0,
+        "views": 0, "earnings": 0, "students": 0, "likes": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.courses.insert_one(dict(course))
@@ -1373,6 +1546,22 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
 async def list_courses(mine: bool = False, user: dict = Depends(get_current_user)):
     q = {"teacher_id": user["user_id"]} if mine else {}
     items = await db.courses.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    if items:
+        ids = [c["course_id"] for c in items]
+        likes = await db.video_likes.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        saves = await db.video_saves.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        liked_ids = {l["course_id"] for l in likes}
+        saved_ids = {s["course_id"] for s in saves}
+        for c in items:
+            c.setdefault("likes", 0)
+            c["liked"] = c["course_id"] in liked_ids
+            c["saved"] = c["course_id"] in saved_ids
+
     return items
 
 @api_router.get("/courses/{course_id}")
@@ -1380,6 +1569,9 @@ async def get_course(course_id: str, user: dict = Depends(get_current_user)):
     c = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
+    c.setdefault("likes", 0)
+    c["liked"] = bool(await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]}))
+    c["saved"] = bool(await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]}))
     return c
 
 @api_router.post("/courses/{course_id}/view")
@@ -1402,6 +1594,156 @@ async def register_view(course_id: str, user: dict = Depends(get_current_user)):
     await db.courses.update_one({"course_id": course_id},
                                 {"$inc": {"views": 1, "students": 1, "earnings": VIEW_RATE_FCFA}})
     return {"counted": True, "rate": VIEW_RATE_FCFA}
+
+# ============================================================
+# Video Interactions: Likes, Saves, Recently Watched
+# ============================================================
+
+# ---------- Likes ----------
+
+@api_router.post("/courses/{course_id}/like")
+async def toggle_like_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_likes.delete_one({"_id": existing["_id"]})
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": -1}})
+        liked = False
+    else:
+        await db.video_likes.insert_one({
+            "like_id": f"lk_{uuid.uuid4().hex[:12]}",
+            "course_id": course_id,
+            "user_id": user["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": 1}})
+        liked = True
+
+    fresh = await db.courses.find_one({"course_id": course_id}, {"_id": 0, "likes": 1})
+    return {"liked": liked, "likes": max(0, (fresh or {}).get("likes", 0))}
+
+@api_router.get("/videos/liked")
+async def list_liked_videos(user: dict = Depends(get_current_user)):
+    likes = await db.video_likes.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not likes:
+        return []
+    ids = [l["course_id"] for l in likes]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for l in likes:
+        c = cmap.get(l["course_id"])
+        if c:
+            c = dict(c)
+            c["liked"] = True
+            c["liked_at"] = l["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Saved videos ----------
+
+@api_router.post("/courses/{course_id}/save")
+async def toggle_save_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_saves.delete_one({"_id": existing["_id"]})
+        return {"saved": False}
+
+    await db.video_saves.insert_one({
+        "save_id": f"sv_{uuid.uuid4().hex[:12]}",
+        "course_id": course_id,
+        "user_id": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"saved": True}
+
+@api_router.get("/videos/saved")
+async def list_saved_videos(user: dict = Depends(get_current_user)):
+    saves = await db.video_saves.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not saves:
+        return []
+    ids = [s["course_id"] for s in saves]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for s in saves:
+        c = cmap.get(s["course_id"])
+        if c:
+            c = dict(c)
+            c["saved"] = True
+            c["saved_at"] = s["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Recently watched ----------
+
+@api_router.post("/courses/{course_id}/watch")
+async def record_watch(course_id: str, user: dict = Depends(get_current_user)):
+    """
+    Upserts a recently-watched entry for this user/video, bumping it to
+    the top of their history on repeat views instead of creating a new
+    row each time. Call this whenever a video starts playing — separate
+    from /view, which only counts the first watch for teacher earnings.
+    """
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.watch_history.update_one(
+        {"course_id": course_id, "user_id": user["user_id"]},
+        {
+            "$set": {"watched_at": now_iso},
+            "$setOnInsert": {
+                "history_id": f"wh_{uuid.uuid4().hex[:12]}",
+                "course_id": course_id,
+                "user_id": user["user_id"],
+            },
+        },
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api_router.get("/videos/recently-watched")
+async def list_recently_watched(limit: int = 20, user: dict = Depends(get_current_user)):
+    capped_limit = max(1, min(limit, 100))
+    history = await db.watch_history.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "watched_at": 1}
+    ).sort("watched_at", -1).to_list(capped_limit)
+    if not history:
+        return []
+    ids = [h["course_id"] for h in history]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for h in history:
+        c = cmap.get(h["course_id"])
+        if c:
+            c = dict(c)
+            c["watched_at"] = h["watched_at"]
+            result.append(c)
+    return result
+
+@api_router.delete("/videos/recently-watched")
+async def clear_recently_watched(user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_many({"user_id": user["user_id"]})
+    return {"ok": True}
+
+@api_router.delete("/videos/recently-watched/{course_id}")
+async def remove_recently_watched(course_id: str, user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_one({"course_id": course_id, "user_id": user["user_id"]})
+    return {"ok": True}
 
 @api_router.get("/teacher/stats")
 async def teacher_stats(user: dict = Depends(get_current_user)):
@@ -1467,7 +1809,7 @@ async def seed_demo():
             await db.courses.insert_one({
                 "course_id": f"crs_{uuid.uuid4().hex[:12]}",
                 "teacher_id": tid, "teacher_name": teacher["name"], "teacher_picture": "",
-                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0,
+                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0, "likes": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(), **c,
             })
 
@@ -1566,9 +1908,9 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     if year: query["year"] = year
     if paper: query["paper_number"] = paper
     if q: query["title"] = {"$regex": re.escape(q), "$options": "i"}
-    
+
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
-    
+
     for p in papers:
         p.setdefault("fileSize", 0)
         p.setdefault("originalFileSize", 0)
@@ -1578,7 +1920,7 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
         p.setdefault("downloads", 0)
         p.setdefault("description", "")
         p.setdefault("saved", False)
-    
+
     drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
     saved = {d["paper_id"] for d in drafts}
     for p in papers:
@@ -1687,15 +2029,91 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     await db.paper_video_cache.insert_one(dict(doc))
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
+def _strip_reasoning_preamble(text: str) -> str:
+    """
+    Safety net: if the model ignores the system prompt and still opens
+    with a reasoning narration ('We are given...', 'Let's find...'),
+    cut everything before the first '## Given' / '## Solution' heading
+    so the student never sees the leaked thought process.
+    """
+    match = re.search(r'##\s*(Given|Solution)', text)
+    if match and match.start() > 0:
+        return text[match.start():].strip()
+    return text
+
 @api_router.post("/papers/ask")
 async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user)):
     p = await db.papers.find_one({"paper_id": req.paper_id}, {"_id": 0})
     subject = p["subject"] if p else "General"
-    system = (f"You are GC AI, an expert {subject} tutor. A student highlighted a question from an exam paper. "
-              "Solve it clearly with concise numbered steps and a final answer.")
+    system = (
+        f"You are GC AI, an expert {subject} exam tutor writing a final worked solution for a student. "
+        "CRITICAL: Do NOT show your internal reasoning process. Never write phrases like "
+        "'We are given', 'We need to find', 'Let's define', 'Let's assume', or any narration of "
+        "how you are thinking through the problem. Go straight to the structured solution as if "
+        "writing model answers for an exam mark scheme.\n\n"
+        "Format your answer using these markdown sections:\n"
+        "## Given\n"
+        "A short bullet list of the known quantities from the question.\n\n"
+        "## Solution\n"
+        "Clearly numbered steps (1., 2., 3. ...), each showing the working, not the thought process. "
+        "Use $ ... $ for inline math and $$ ... $$ for standalone equations.\n\n"
+        "## Answer\n"
+        "The final numeric or symbolic result, stated in one line.\n\n"
+        "Be concise. Do not restate the question. Do not apologize or hedge."
+    )
     chat = _new_chat(f"ask_{uuid.uuid4().hex}", system)
-    resp = await chat.send_message(f"Solve this exam question step by step:\n\n{req.question}")
+    resp = await chat.send_message(f"Question:\n\n{req.question}")
+    resp = _strip_reasoning_preamble(resp)
     return {"answer": resp}
+
+# ============================================================
+# Reading Time Tracking
+# ============================================================
+# Each document tracks total_seconds (lifetime total for that paper)
+# AND a daily_seconds map (date -> seconds) so the dashboard's 7-day
+# consistency chart can attribute time to the day it was actually
+# read on, rather than lumping everything onto the day of the last
+# heartbeat.
+
+class ReadingTimeRequest(BaseModel):
+    seconds: int  # delta seconds since last heartbeat
+
+@api_router.post("/papers/{paper_id}/reading-time")
+async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict = Depends(get_current_user)):
+    # Clamp to guard against a stalled tab sending a huge delta after resume
+    seconds = max(0, min(req.seconds, 120))
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    today_key = now.date().isoformat()
+
+    await db.paper_reading_time.update_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]},
+        {
+            "$inc": {
+                "total_seconds": seconds,
+                f"daily_seconds.{today_key}": seconds,
+            },
+            "$set": {"last_updated": now_iso},
+            "$setOnInsert": {
+                "record_id": f"rt_{uuid.uuid4().hex[:12]}",
+                "paper_id": paper_id,
+                "user_id": user["user_id"],
+                "created_at": now_iso,
+            },
+        },
+        upsert=True,
+    )
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"ok": True, "total_seconds": doc.get("total_seconds", 0) if doc else seconds}
+
+@api_router.get("/papers/{paper_id}/reading-time")
+async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"total_seconds": (doc or {}).get("total_seconds", 0)}
 
 # ============================================================
 # Drafts
@@ -1705,14 +2123,14 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
 async def list_drafts(user: dict = Depends(get_current_user)):
     try:
         drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
-        
+
         if not drafts:
             return []
-            
+
         ids = [d["paper_id"] for d in drafts]
         papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
         pmap = {p["paper_id"]: p for p in papers}
-        
+
         result = []
         for d in drafts:
             pp = pmap.get(d["paper_id"])
@@ -1739,25 +2157,130 @@ async def list_drafts(user: dict = Depends(get_current_user)):
         logger.error(f"List drafts error: {e}")
         return []
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ============================================================
+# Generate Video from Highlighted Text
+# ============================================================
+
+class HighlightVideoRequest(BaseModel):
+    text: str  # The highlighted text from the PDF
+    context: Optional[str] = None  # Optional surrounding context
+
+@api_router.post("/papers/{paper_id}/video/highlight")
+async def generate_video_from_highlight(paper_id: str, req: HighlightVideoRequest, user: dict = Depends(get_current_user)):
+    """
+    Generate a video solution based on the highlighted text from the PDF
+    """
+    # Get the paper for context
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    
+    # Check cache for this specific highlight
+    cache_key = f"{paper_id}_{hash(req.text)}"
+    cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
+    if cached:
+        return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
+
+    # Get the paper text for context
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    full_text = extract_pdf_text(data, max_chars=3000)
+    
+    system = (
+        "You are a master teacher creating a narrated video lesson that solves a specific "
+        "exam question that a student has highlighted. Return STRICT JSON only, "
+        "with no reasoning or thinking text before or after it."
+    )
+    
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"STUDENT HIGHLIGHTED THIS TEXT:\n{req.text}\n\n"
+        f"PAPER CONTEXT (for reference):\n{full_text[:1500]}\n\n"
+        "Create a video walkthrough that solves the question or explains the concept "
+        "the student highlighted. If it's a question, solve it step by step. "
+        "If it's a concept, explain it clearly with examples. "
+        "Return JSON: {\"title\":\"...\",\"question\":\"...\","
+        "\"scenes\":[{\"heading\":\"Step title\","
+        "\"board\":[\"line shown on whiteboard\",\"another line\"],"
+        "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
+        "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
+    )
+    
+    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
+    resp = await chat.send_message(prompt)
+    
+    try:
+        parsed = _clean_json(resp)
+        raw_scenes = parsed.get("scenes", [])
+        if not raw_scenes:
+            raise ValueError("empty scenes")
+    except Exception:
+        logger.error(f"Highlight video parse fail: {resp[:200]}")
+        raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
+
+    scenes = []
+    for i, sc in enumerate(raw_scenes[:8]):
+        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+        scenes.append({
+            "heading": sc.get("heading", f"Step {i+1}"),
+            "board": sc.get("board", []),
+            "narration": narration,
+            "audio": "",
+        })
+    
+    doc = {
+        "cache_key": cache_key,
+        "paper_id": paper_id,
+        "title": parsed.get("title", f"Solution for highlighted text"),
+        "question": parsed.get("question", req.text[:200]),
+        "scenes": scenes,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.highlight_video_cache.insert_one(dict(doc))
+    
+    return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
+
+
+
+
+
+
+
+
+
+
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
     try:
         logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
-        
+
         paper = await db.papers.find_one({"paper_id": req.paper_id})
         if not paper:
             logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
-        
+
         existing = await db.drafts.find_one({
-            "user_id": user["user_id"], 
+            "user_id": user["user_id"],
             "paper_id": req.paper_id
         })
-        
+
         if existing:
             await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
             logger.info(f"Drafts - Removed draft for {req.paper_id}")
             return {"saved": False}
-        
+
         await db.drafts.insert_one({
             "user_id": user["user_id"],
             "paper_id": req.paper_id,
