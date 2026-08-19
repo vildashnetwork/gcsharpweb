@@ -1,6 +1,5 @@
 
 
-
 // // pages/PaperReader.jsx
 // import { useEffect, useRef, useState, useCallback } from "react";
 // import { useParams, useNavigate } from "react-router-dom";
@@ -243,16 +242,7 @@
 //     processed = processed.replace(/\\\(/g, '$');
 //     processed = processed.replace(/\\\)/g, '$');
 
-//     // 5. Remove extra parentheses around math that might break rendering
-//     // e.g., (\frac{2}{x-2}) -> \frac{2}{x-2} but only when it's the whole expression
-//     // We'll use a more careful approach: if we see \( ... \) we already converted to $ ... $, so no extra.
-//     // But sometimes AI puts ( ... ) around math without LaTeX delimiters; we can handle that.
-//     // We'll convert ( \frac{...} ) to \frac{...} if the parentheses are only around the math.
-//     // However, this might be risky, so we'll do a targeted clean.
-//     // We'll remove parentheses that surround a complete LaTeX expression inside $ or $$.
-//     // Instead, we'll rely on the delimiter conversion.
-
-//     // 6. Fix spacing after math delimiters
+//     // 5. Fix spacing after math delimiters
 //     processed = processed.replace(/\$\$([^$]+)\$\$/g, (match, content) => {
 //         if (!content.trim()) return match;
 //         return `$$${content.trim()}$$`;
@@ -262,21 +252,21 @@
 //         return `$${content.trim()}$`;
 //     });
 
-//     // 7. Format section headings
+//     // 6. Format section headings
 //     processed = processed.replace(/\n*Given\n*/gi, '\n\n## Given\n\n');
 //     processed = processed.replace(/\n*Solution\n*/gi, '\n\n## Solution\n\n');
 //     processed = processed.replace(/\n*Answer\n*/gi, '\n\n## Answer\n\n');
 
-//     // 8. Format numbered steps (1., 2., 3. etc) with bold
+//     // 7. Format numbered steps (1., 2., 3. etc) with bold
 //     processed = processed.replace(/^(\d+)\.\s+/gm, '**Step $1:** ');
 
-//     // 9. Format sub-steps (a), b), c) etc)
+//     // 8. Format sub-steps (a), b), c) etc)
 //     processed = processed.replace(/^([a-z]\)\s+)/gm, '**$1** ');
 
-//     // 10. Format "Method" headings (e.g., ✅ Method 1:)
+//     // 9. Format "Method" headings (e.g., ✅ Method 1:)
 //     processed = processed.replace(/\n*✅\s+Method\s+(\d+):/gi, '\n\n### Method $1:');
 
-//     // 11. Convert tab-separated tables to markdown tables
+//     // 10. Convert tab-separated tables to markdown tables
 //     const lines = processed.split('\n');
 //     let inTable = false;
 //     let tableLines = [];
@@ -284,27 +274,21 @@
 
 //     for (let i = 0; i < lines.length; i++) {
 //         const line = lines[i].trim();
-//         // Detect table rows: lines with pipes or tabs
 //         if (line.includes('|') || (line.includes('\t') && line.length > 5)) {
 //             if (!inTable) {
 //                 inTable = true;
 //                 tableLines = [];
 //             }
-//             // Convert tabs to pipes if needed
 //             const formattedLine = line.includes('\t')
 //                 ? '| ' + line.split('\t').join(' | ') + ' |'
 //                 : line;
 //             tableLines.push(formattedLine);
 //         } else {
 //             if (inTable && tableLines.length > 0) {
-//                 // Check if this is a header row followed by data
 //                 if (tableLines.length >= 2) {
-//                     // Add header
 //                     resultLines.push(tableLines[0]);
-//                     // Add separator
 //                     const numCols = tableLines[0].split('|').filter(s => s.trim()).length;
 //                     resultLines.push('|' + Array(numCols).fill('---').join('|') + '|');
-//                     // Add data rows
 //                     for (let j = 1; j < tableLines.length; j++) {
 //                         resultLines.push(tableLines[j]);
 //                     }
@@ -317,7 +301,6 @@
 //             resultLines.push(line);
 //         }
 //     }
-//     // Handle any remaining table
 //     if (inTable && tableLines.length > 0) {
 //         if (tableLines.length >= 2) {
 //             resultLines.push(tableLines[0]);
@@ -332,22 +315,25 @@
 //     }
 //     processed = resultLines.join('\n');
 
-//     // 12. Clean up extra spaces
+//     // 11. Clean up extra spaces
 //     processed = processed.replace(/  +/g, ' ');
 //     processed = processed.replace(/\n\s*\n/g, '\n\n');
 
-//     // 13. Add horizontal rules between major sections
+//     // 12. Add horizontal rules between major sections
 //     processed = processed.replace(/\n\s*---\s*\n/g, '\n\n---\n\n');
 
-//     // 14. Ensure proper line breaks after headings
+//     // 13. Ensure proper line breaks after headings
 //     processed = processed.replace(/(#{1,6}\s+[^\n]+)\n/g, '$1\n\n');
 
-//     // 15. Fix special characters
-//     processed = processed.replace(//g, '≠');
-//     processed = processed.replace(/→/g, '→');
-//     processed = processed.replace(/⇒/g, '⇒');
+//     // 14. (removed) — this used to call processed.replace(g, '≠') with a
+//     // corrupted regex literal (a bare, undefined variable `g` instead of
+//     // an actual /regex/), which threw "ReferenceError: g is not defined"
+//     // on every single AI answer and was the real cause of "Sorry, I
+//     // couldn't solve that. Please try again." The → and ⇒ replacements
+//     // below were self-replacements (no-ops) already, so nothing of value
+//     // was lost by dropping this step.
 
-//     // 16. Fix markdown bold
+//     // 15. Fix markdown bold
 //     processed = processed.replace(/\*\*([^*]+)\*\*/g, (match, content) => {
 //         if (content.trim()) {
 //             return `**${content.trim()}**`;
@@ -355,7 +341,7 @@
 //         return content;
 //     });
 
-//     // 17. Fix bold followed by punctuation
+//     // 16. Fix bold followed by punctuation
 //     processed = processed.replace(/\*\*([^*]+)\*\*([,.;:!?])/g, '**$1**$2');
 
 //     return processed.trim();
@@ -468,6 +454,10 @@
 //     const [showAskButton, setShowAskButton] = useState(false);
 //     const [isMobile, setIsMobile] = useState(false);
 
+//     // PDF blob state — see the fetch effect below for why this exists
+//     const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
+//     const [pdfError, setPdfError] = useState(false);
+
 //     // Check if mobile
 //     useEffect(() => {
 //         const checkMobile = () => {
@@ -491,6 +481,46 @@
 //             SmartNavigation.scrollToVideo(videoRef, 500);
 //         }
 //     }, [video]);
+
+//     // ============================================================
+//     // Fetch the PDF ourselves, authenticated, as a blob
+//     // ============================================================
+//     // @react-pdf-viewer's <Viewer fileUrl="..."> fetches the file
+//     // internally via pdf.js's own networking layer, which defaults
+//     // withCredentials to false and is not exposed as a prop here —
+//     // so it never sends our session_token cookie, and the protected
+//     // /papers/{id}/pdf endpoint correctly responds 401.
+//     //
+//     // Fix: fetch the PDF through the same `api` client that already
+//     // successfully authenticates every other request on this page,
+//     // then hand the Viewer a blob: URL — which needs no auth at all
+//     // since the bytes are already in memory.
+//     useEffect(() => {
+//         if (!paperId) return;
+//         let objectUrl;
+//         let cancelled = false;
+
+//         setPdfBlobUrl(null);
+//         setPdfError(false);
+
+//         api.get(`/papers/${paperId}/pdf`, { responseType: "blob" })
+//             .then((res) => {
+//                 if (cancelled) return;
+//                 objectUrl = URL.createObjectURL(res.data);
+//                 setPdfBlobUrl(objectUrl);
+//             })
+//             .catch(() => {
+//                 if (!cancelled) {
+//                     setPdfError(true);
+//                     toast.error("Could not load the PDF");
+//                 }
+//             });
+
+//         return () => {
+//             cancelled = true;
+//             if (objectUrl) URL.revokeObjectURL(objectUrl);
+//         };
+//     }, [paperId]);
 
 //     // ============================================================
 //     // Ask AI - Text-based solution
@@ -681,14 +711,24 @@
 //                 {/* PDF viewer */}
 //                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
 //                     <div className="max-h-[80vh] overflow-auto bg-secondary/20">
-//                         <Worker workerUrl={PDF_WORKER_URL}>
-//                             <Viewer
-//                                 fileUrl={`${API}/papers/${paperId}/pdf`}
-//                                 plugins={[defaultLayoutPluginInstance]}
-//                                 defaultScale={SpecialZoomLevel.PageFit}
-//                                 enableSmoothScroll={true}
-//                             />
-//                         </Worker>
+//                         {pdfError ? (
+//                             <div className="py-20 text-center text-sm text-muted-foreground">
+//                                 Could not load this PDF. Try refreshing the page.
+//                             </div>
+//                         ) : pdfBlobUrl ? (
+//                             <Worker workerUrl={PDF_WORKER_URL}>
+//                                 <Viewer
+//                                     fileUrl={pdfBlobUrl}
+//                                     plugins={[defaultLayoutPluginInstance]}
+//                                     defaultScale={SpecialZoomLevel.PageFit}
+//                                     enableSmoothScroll={true}
+//                                 />
+//                             </Worker>
+//                         ) : (
+//                             <div className="py-20 flex justify-center">
+//                                 <Loader2 className="h-6 w-6 animate-spin text-primary" />
+//                             </div>
+//                         )}
 //                     </div>
 //                 </div>
 
@@ -915,9 +955,6 @@
 
 
 
-
-
-
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -932,6 +969,7 @@ import Markdown from "../components/Markdown";
 import {
     ArrowLeft, Loader2, Sparkles, Bot,
     Bookmark, BookmarkCheck, FileText, Film, ListChecks, X, Clock, ChevronDown,
+    Flame, Trophy, Target,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -1148,7 +1186,7 @@ function preprocessAIResponse(text) {
     // 2. Ensure proper spacing after headings
     processed = processed.replace(/(#{1,6}\s+[^\n]+)(\S)/g, '$1\n\n$2');
 
-    // 3. Fix typos from AI (Give n → Given, Solutio n → Solution, Answe r → Answer)
+    // 3. Fix typos from AI
     processed = processed.replace(/Give\s*n/gi, 'Given');
     processed = processed.replace(/Solutio\s*n/gi, 'Solution');
     processed = processed.replace(/Answe\s*r/gi, 'Answer');
@@ -1156,7 +1194,6 @@ function preprocessAIResponse(text) {
     // 4. Convert LaTeX \[ \] to Markdown $$ $$
     processed = processed.replace(/\\\[/g, '$$');
     processed = processed.replace(/\\\]/g, '$$');
-    // Convert LaTeX \( \) to Markdown $ $
     processed = processed.replace(/\\\(/g, '$');
     processed = processed.replace(/\\\)/g, '$');
 
@@ -1175,13 +1212,13 @@ function preprocessAIResponse(text) {
     processed = processed.replace(/\n*Solution\n*/gi, '\n\n## Solution\n\n');
     processed = processed.replace(/\n*Answer\n*/gi, '\n\n## Answer\n\n');
 
-    // 7. Format numbered steps (1., 2., 3. etc) with bold
+    // 7. Format numbered steps
     processed = processed.replace(/^(\d+)\.\s+/gm, '**Step $1:** ');
 
-    // 8. Format sub-steps (a), b), c) etc)
+    // 8. Format sub-steps
     processed = processed.replace(/^([a-z]\)\s+)/gm, '**$1** ');
 
-    // 9. Format "Method" headings (e.g., ✅ Method 1:)
+    // 9. Format "Method" headings
     processed = processed.replace(/\n*✅\s+Method\s+(\d+):/gi, '\n\n### Method $1:');
 
     // 10. Convert tab-separated tables to markdown tables
@@ -1237,21 +1274,13 @@ function preprocessAIResponse(text) {
     processed = processed.replace(/  +/g, ' ');
     processed = processed.replace(/\n\s*\n/g, '\n\n');
 
-    // 12. Add horizontal rules between major sections
+    // 12. Add horizontal rules
     processed = processed.replace(/\n\s*---\s*\n/g, '\n\n---\n\n');
 
     // 13. Ensure proper line breaks after headings
     processed = processed.replace(/(#{1,6}\s+[^\n]+)\n/g, '$1\n\n');
 
-    // 14. (removed) — this used to call processed.replace(g, '≠') with a
-    // corrupted regex literal (a bare, undefined variable `g` instead of
-    // an actual /regex/), which threw "ReferenceError: g is not defined"
-    // on every single AI answer and was the real cause of "Sorry, I
-    // couldn't solve that. Please try again." The → and ⇒ replacements
-    // below were self-replacements (no-ops) already, so nothing of value
-    // was lost by dropping this step.
-
-    // 15. Fix markdown bold
+    // 14. Fix markdown bold
     processed = processed.replace(/\*\*([^*]+)\*\*/g, (match, content) => {
         if (content.trim()) {
             return `**${content.trim()}**`;
@@ -1259,7 +1288,7 @@ function preprocessAIResponse(text) {
         return content;
     });
 
-    // 16. Fix bold followed by punctuation
+    // 15. Fix bold followed by punctuation
     processed = processed.replace(/\*\*([^*]+)\*\*([,.;:!?])/g, '**$1**$2');
 
     return processed.trim();
@@ -1349,6 +1378,44 @@ function formatDuration(totalSeconds) {
     return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
+// ============================================================
+// Streak & Level Badge Component
+// ============================================================
+function StreakBadge({ streak, level, progress, goalSeconds, todaySeconds }) {
+    const goalDisplay = goalSeconds >= 3600
+        ? `${Math.floor(goalSeconds / 3600)}h`
+        : `${Math.floor(goalSeconds / 60)}min`;
+
+    const progressPercent = Math.min(100, progress);
+
+    return (
+        <div className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-sm tabular-nums">
+            <div className="flex items-center gap-1.5">
+                <Flame className={`h-3.5 w-3.5 ${streak > 0 ? 'text-orange-500' : 'text-muted-foreground'}`} />
+                <span className="font-medium">{streak}</span>
+            </div>
+            <div className="w-px h-4 bg-border" />
+            <div className="flex items-center gap-1.5">
+                <Trophy className="h-3.5 w-3.5 text-yellow-500" />
+                <span className="font-medium">{level}</span>
+            </div>
+            <div className="w-px h-4 bg-border" />
+            <div className="flex items-center gap-1.5 min-w-[60px]">
+                <Target className="h-3.5 w-3.5 text-muted-foreground" />
+                <div className="w-12 h-1.5 rounded-full bg-secondary overflow-hidden">
+                    <div
+                        className="h-full bg-primary transition-all duration-500"
+                        style={{ width: `${progressPercent}%` }}
+                    />
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                    {Math.round(progressPercent)}%
+                </span>
+            </div>
+        </div>
+    );
+}
+
 export default function PaperReader() {
     const { paperId } = useParams();
     const navigate = useNavigate();
@@ -1372,7 +1439,16 @@ export default function PaperReader() {
     const [showAskButton, setShowAskButton] = useState(false);
     const [isMobile, setIsMobile] = useState(false);
 
-    // PDF blob state — see the fetch effect below for why this exists
+    // Streak & level state
+    const [streakData, setStreakData] = useState({
+        streak: 0,
+        level: 1,
+        progress_percent: 0,
+        today_seconds: 0,
+        goal_seconds: 3600,
+    });
+
+    // PDF blob state
     const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
     const [pdfError, setPdfError] = useState(false);
 
@@ -1385,6 +1461,23 @@ export default function PaperReader() {
         window.addEventListener('resize', checkMobile);
         return () => window.removeEventListener('resize', checkMobile);
     }, []);
+
+    // Fetch streak data
+    const fetchStreak = useCallback(async () => {
+        try {
+            const res = await api.get('/user/streak');
+            setStreakData(res.data);
+        } catch (err) {
+            // ignore
+        }
+    }, []);
+
+    useEffect(() => {
+        fetchStreak();
+        // Refresh every minute
+        const interval = setInterval(fetchStreak, 60000);
+        return () => clearInterval(interval);
+    }, [fetchStreak]);
 
     // Scroll to answer when it appears
     useEffect(() => {
@@ -1400,19 +1493,7 @@ export default function PaperReader() {
         }
     }, [video]);
 
-    // ============================================================
     // Fetch the PDF ourselves, authenticated, as a blob
-    // ============================================================
-    // @react-pdf-viewer's <Viewer fileUrl="..."> fetches the file
-    // internally via pdf.js's own networking layer, which defaults
-    // withCredentials to false and is not exposed as a prop here —
-    // so it never sends our session_token cookie, and the protected
-    // /papers/{id}/pdf endpoint correctly responds 401.
-    //
-    // Fix: fetch the PDF through the same `api` client that already
-    // successfully authenticates every other request on this page,
-    // then hand the Viewer a blob: URL — which needs no auth at all
-    // since the bytes are already in memory.
     useEffect(() => {
         if (!paperId) return;
         let objectUrl;
@@ -1440,9 +1521,7 @@ export default function PaperReader() {
         };
     }, [paperId]);
 
-    // ============================================================
-    // Ask AI - Text-based solution
-    // ============================================================
+    // Ask AI
     const askAI = useCallback(async (question) => {
         if (!question || question.length < 3) return;
         setAskOpen(true);
@@ -1465,9 +1544,7 @@ export default function PaperReader() {
         finally { setAskLoading(false); }
     }, [paperId]);
 
-    // ============================================================
     // Generate Video from highlighted text
-    // ============================================================
     const generateHighlightVideo = useCallback(async (highlightedText) => {
         if (!highlightedText || highlightedText.length < 10) {
             toast.error("Please select more text to generate a video");
@@ -1494,9 +1571,7 @@ export default function PaperReader() {
         }
     }, [paperId, paper]);
 
-    // ============================================================
     // Custom text selection handler
-    // ============================================================
     const handleTextSelection = useCallback(() => {
         const selection = window.getSelection();
         const text = selection?.toString().trim();
@@ -1524,9 +1599,6 @@ export default function PaperReader() {
         };
     }, [handleTextSelection]);
 
-    // ============================================================
-    // Handle Ask Click - navigates to answer section
-    // ============================================================
     const handleAskClick = () => {
         if (selectedText) {
             SmartNavigation.scrollToAnswer(answerRef, 100);
@@ -1545,9 +1617,7 @@ export default function PaperReader() {
         }
     };
 
-    // ============================================================
     // PDF Viewer plugins
-    // ============================================================
     const defaultLayoutPluginInstance = defaultLayoutPlugin({
         sidebarTabs: () => [],
     });
@@ -1605,6 +1675,7 @@ export default function PaperReader() {
                 </div>
 
                 <div className="flex items-center gap-2">
+                    {/* Reading timer */}
                     <div
                         data-testid="reading-timer"
                         title="Time spent actively reading this paper"
@@ -1617,6 +1688,15 @@ export default function PaperReader() {
                         <Clock className="h-3.5 w-3.5 text-muted-foreground" />
                         <span className="font-medium">{formatDuration(displaySeconds)}</span>
                     </div>
+
+                    {/* Streak badge */}
+                    <StreakBadge
+                        streak={streakData.streak}
+                        level={streakData.level}
+                        progress={streakData.progress_percent}
+                        goalSeconds={streakData.goal_seconds}
+                        todaySeconds={streakData.today_seconds}
+                    />
 
                     <Button variant={paper.saved ? "default" : "outline"} onClick={toggleDraft} data-testid="reader-save-draft" className="gap-2">
                         {paper.saved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
@@ -1677,7 +1757,7 @@ export default function PaperReader() {
                         </div>
                     </div>
 
-                    {/* Highlight ask answer - with structured Markdown */}
+                    {/* Highlight ask answer */}
                     {askOpen && (
                         <div
                             ref={answerRef}
@@ -1772,9 +1852,7 @@ export default function PaperReader() {
                 </div>
             </div>
 
-            {/* ============================================================
-                Ask GC AI — Fixed button with TWO options: Ask AI & Generate Video
-                ============================================================ */}
+            {/* Ask GC AI — Fixed button */}
             {showAskButton && selectedText && (
                 <div
                     className={`fixed z-[9999] pointer-events-none ${isMobile

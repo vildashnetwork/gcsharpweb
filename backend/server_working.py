@@ -2227,27 +2227,29 @@ def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: st
 
 async def daily_reminder_job():
     now = datetime.now(timezone.utc)
-    # Run at 15:00 UTC = 16:00 Cameroon
     if now.hour != 15:
         return
 
     logger.info("Running daily reminder check")
     yesterday = (now - timedelta(days=1)).date()
     users = await db.users.find({}).to_list(1000)
+
     for user in users:
         user_id = user["user_id"]
         email = user.get("email")
         if not email:
             continue
-        # Check if already sent for yesterday
+
         log = await db.reminder_log.find_one({"user_id": user_id, "date": yesterday.isoformat()})
         if log:
             continue
 
         seconds = await get_study_time_for_date(user_id, yesterday)
         goal = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
+
         if seconds >= goal:
-            # Met goal yesterday -> update streak (if not already)
+            # --- Goal met ---
+            # Update streak
             last_met = user.get("last_goal_met_date")
             if last_met:
                 last_met_date = datetime.fromisoformat(last_met).date()
@@ -2255,24 +2257,37 @@ async def daily_reminder_job():
                 last_met_date = None
 
             if last_met_date == yesterday:
-                pass  # already counted
+                streak = user.get("streak", 0)   # already counted today, keep same
             elif last_met_date == yesterday - timedelta(days=1):
                 streak = user.get("streak", 0) + 1
             else:
                 streak = 1
+
             await db.users.update_one(
                 {"user_id": user_id},
                 {"$set": {"streak": streak, "last_goal_met_date": yesterday.isoformat()}}
             )
+
+            # 🎯 XP = 5 × streak  (1 streak = 5 XP)
+            xp_gain = streak * 5
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"xp": xp_gain}}
+            )
+
+            # Update level (still based on streak)
             new_level = 1 + streak // 7
             await db.users.update_one({"user_id": user_id}, {"$set": {"level": new_level}})
+
         else:
-            # Did not meet goal yesterday -> reset streak to 0
+            # --- Goal missed ---
+            # Reset streak
             await db.users.update_one(
                 {"user_id": user_id},
                 {"$set": {"streak": 0}}
             )
-            # Send reminder email
+
+            # Send reminder email (unchanged)
             name = user.get("name", "Student")
             subject = "📚 Don't break your study streak!"
             html = f"""
@@ -2283,13 +2298,12 @@ async def daily_reminder_job():
             <a href="{APP_URL}/dashboard" style="background:#4F46E5;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Go to Dashboard</a>
             """
             send_brevo_email(email, name, subject, html)
-            # Log reminder sent
+
             await db.reminder_log.insert_one({
                 "user_id": user_id,
                 "date": yesterday.isoformat(),
                 "sent_at": now.isoformat()
             })
-
 # ============================================================
 # Streak API Endpoint
 # ============================================================
