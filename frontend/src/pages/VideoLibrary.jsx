@@ -260,7 +260,7 @@ function CustomVideoPlayer({ src, sources, poster, title, className = "", onWatc
         }
     }, [playing, scheduleHide]);
 
-    // ✅ FIXED: Added togglePlay to dependency array
+
     useEffect(() => {
         const onKeyDown = (e) => {
             if (!containerRef.current?.contains(document.activeElement) && document.activeElement !== document.body) return;
@@ -715,9 +715,6 @@ export default function VideoLibrary() {
         loadVideos();
     }, [loadVideos]);
 
-    // ============================================================
-    // Track current video state - ✅ FIXED with proper dependency
-    // ============================================================
     useEffect(() => {
         if (currentVideo) {
             setIsLiked(!!currentVideo.liked);

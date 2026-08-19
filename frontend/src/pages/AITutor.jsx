@@ -247,9 +247,6 @@
 
 
 
-
-
-
 // pages/AITutor.tsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API } from "../lib/api";
@@ -261,9 +258,9 @@ import { Button } from "../components/ui/button";
 import {
     Bot, Send, Sparkles, Calculator, BookOpen, CalendarClock, ListChecks, Layers, FileText, User,
     Menu, X, Plus, Trash2, Clock, ChevronRight, Loader2, Pin, PinOff, Mic, MicOff,
-    Upload, Image, File, Paperclip, StopCircle,
 } from "lucide-react";
 import Markdown from "../components/Markdown";
+import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
 
 const SUBJECTS = ["General", "Mathematics", "Physics", "Chemistry", "Biology", "Economics", "English Language", "French", "Computer Science"];
 const QUICK = [
@@ -289,15 +286,63 @@ export default function AITutor() {
     const [loadingSessions, setLoadingSessions] = useState(true);
     const [isNewChat, setIsNewChat] = useState(true);
     const [titleGenerated, setTitleGenerated] = useState(false);
-    const [isRecording, setIsRecording] = useState(false);
-    const [uploading, setUploading] = useState(false);
     const scrollRef = useRef(null);
     const abortRef = useRef(null);
     const sidebarRef = useRef(null);
     const inputRef = useRef(null);
-    const recognitionRef = useRef(null);
 
-    // Load chat sessions
+    // ============================================================
+    // Speech Recognition with better error handling
+    // ============================================================
+    const {
+        transcript,
+        listening,
+        resetTranscript,
+        browserSupportsSpeechRecognition,
+    } = useSpeechRecognition();
+
+    // Update input when transcript changes
+    useEffect(() => {
+        if (transcript) {
+            setInput(transcript);
+        }
+    }, [transcript]);
+
+    // Check if browser supports speech recognition
+    useEffect(() => {
+        if (!browserSupportsSpeechRecognition) {
+            console.warn("Speech recognition not supported in this browser");
+        }
+    }, [browserSupportsSpeechRecognition]);
+
+    const toggleRecording = () => {
+        if (!browserSupportsSpeechRecognition) {
+            alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+            return;
+        }
+
+        if (listening) {
+            // Stop listening
+            SpeechRecognition.stopListening();
+            // Keep the final text
+            if (transcript) {
+                setInput(transcript);
+            }
+        } else {
+            // Clear previous transcript and start
+            resetTranscript();
+            setInput("");
+            SpeechRecognition.startListening({
+                continuous: true,
+                language: 'en-US',
+                interimResults: true
+            });
+        }
+    };
+
+    // ============================================================
+    // Load Chat Sessions
+    // ============================================================
     const loadSessions = useCallback(async () => {
         try {
             const res = await fetch(`${API}/ai/sessions`, {
@@ -305,7 +350,6 @@ export default function AITutor() {
             });
             if (res.ok) {
                 const data = await res.json();
-                // Sort: pinned first, then by updated_at
                 const sorted = data.sort((a, b) => {
                     if (a.pinned && !b.pinned) return -1;
                     if (!a.pinned && b.pinned) return 1;
@@ -360,7 +404,6 @@ export default function AITutor() {
                 const updated = prev.map(s =>
                     s.session_id === sessionId ? { ...s, pinned: newPinned } : s
                 );
-                // Re-sort: pinned first
                 return updated.sort((a, b) => {
                     if (a.pinned && !b.pinned) return -1;
                     if (!a.pinned && b.pinned) return 1;
@@ -370,112 +413,6 @@ export default function AITutor() {
         } catch (error) {
             console.error("Failed to toggle pin:", error);
         }
-    };
-
-    // ============================================================
-    // Speech Recognition
-    // ============================================================
-    const toggleRecording = () => {
-        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-            alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
-            return;
-        }
-
-        if (isRecording) {
-            stopRecording();
-        } else {
-            startRecording();
-        }
-    };
-
-    const startRecording = () => {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.lang = 'en-US';
-        recognitionRef.current.continuous = false;
-        recognitionRef.current.interimResults = true;
-
-        recognitionRef.current.onresult = (event) => {
-            let transcript = '';
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                transcript += event.results[i][0].transcript;
-            }
-            setInput(transcript);
-        };
-
-        recognitionRef.current.onerror = (event) => {
-            console.error("Speech recognition error:", event.error);
-            setIsRecording(false);
-        };
-
-        recognitionRef.current.onend = () => {
-            setIsRecording(false);
-        };
-
-        recognitionRef.current.start();
-        setIsRecording(true);
-    };
-
-    const stopRecording = () => {
-        if (recognitionRef.current) {
-            recognitionRef.current.stop();
-        }
-        setIsRecording(false);
-    };
-
-    // ============================================================
-    // File Upload
-    // ============================================================
-    const handleFileUpload = async (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        setUploading(true);
-        const reader = new FileReader();
-
-        reader.onload = async (event) => {
-            try {
-                let content = event.target?.result;
-                let message = "";
-
-                if (file.type.startsWith('image/')) {
-                    // For images, use base64
-                    message = `[Image uploaded: ${file.name}]\n\nPlease analyze this image and extract any text or solve any problem shown in it.`;
-                } else if (file.type === 'application/pdf') {
-                    // For PDFs, we need to send to backend for extraction
-                    const formData = new FormData();
-                    formData.append('file', file);
-
-                    const res = await fetch(`${API}/upload/pdf`, {
-                        method: 'POST',
-                        credentials: 'include',
-                        body: formData,
-                    });
-
-                    if (res.ok) {
-                        const data = await res.json();
-                        message = `[PDF uploaded: ${file.name}]\n\nExtracted text:\n${data.text}\n\nPlease help me with this content.`;
-                    } else {
-                        message = `[PDF uploaded: ${file.name}]\n\nPlease help me analyze this PDF content.`;
-                    }
-                } else if (file.type.startsWith('text/')) {
-                    content = await file.text();
-                    message = `[File uploaded: ${file.name}]\n\nContent:\n${content}\n\nPlease help me with this.`;
-                } else {
-                    message = `[File uploaded: ${file.name}]\n\nPlease help me analyze this file.`;
-                }
-
-                setInput(message);
-                setUploading(false);
-            } catch (error) {
-                console.error("File upload error:", error);
-                setUploading(false);
-                alert("Failed to process file. Please try again.");
-            }
-        };
-
-        reader.readAsDataURL(file);
-        e.target.value = '';
     };
 
     // ============================================================
@@ -521,6 +458,9 @@ export default function AITutor() {
         setIsNewChat(true);
         setTitleGenerated(false);
         setInput("");
+        if (listening) {
+            SpeechRecognition.stopListening();
+        }
         if (window.innerWidth < 768) setSidebarOpen(false);
         inputRef.current?.focus();
     };
@@ -536,6 +476,9 @@ export default function AITutor() {
                 setCurrentSessionId(sessionId);
                 setIsNewChat(false);
                 setTitleGenerated(true);
+                if (listening) {
+                    SpeechRecognition.stopListening();
+                }
                 if (window.innerWidth < 768) setSidebarOpen(false);
             }
         } catch (error) {
@@ -589,9 +532,16 @@ export default function AITutor() {
     const send = async (text) => {
         const msg = text ?? input;
         if (!msg.trim() || streaming) return;
+
+        // If recording is active, stop it
+        if (listening) {
+            SpeechRecognition.stopListening();
+        }
+
+        const messageToSend = msg;
         setInput("");
 
-        setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
+        setMessages((m) => [...m, { role: "user", content: messageToSend }, { role: "assistant", content: "" }]);
         setStreaming(true);
 
         const controller = new AbortController();
@@ -603,7 +553,7 @@ export default function AITutor() {
                 method: "POST",
                 credentials: "include",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: msg, subject, session_id: currentSessionId }),
+                body: JSON.stringify({ message: messageToSend, subject, session_id: currentSessionId }),
                 signal: controller.signal,
             });
 
@@ -665,7 +615,7 @@ export default function AITutor() {
 
             if (isNewChat && newSessionId && !titleGenerated) {
                 setTitleGenerated(true);
-                await generateTitle(newSessionId, msg);
+                await generateTitle(newSessionId, messageToSend);
             }
 
         } catch (err) {
@@ -693,6 +643,34 @@ export default function AITutor() {
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
     }, [sidebarOpen]);
+
+    // Visual feedback for recording - frequency visualization
+    const renderFrequencyVisualization = () => {
+        if (!listening) return null;
+
+        const bars = [];
+        const numBars = 30;
+        for (let i = 0; i < numBars; i++) {
+            const height = Math.random() * 60 + 10;
+            bars.push(height);
+        }
+
+        return (
+            <div className="flex items-center justify-center gap-0.5 h-8 mb-2">
+                {bars.map((height, index) => (
+                    <div
+                        key={index}
+                        className="w-1 bg-gradient-to-t from-primary/60 to-primary rounded-full transition-all duration-75"
+                        style={{
+                            height: `${height}%`,
+                            animation: `pulse ${0.2 + Math.random() * 0.3}s ease-in-out infinite alternate`,
+                            animationDelay: `${Math.random() * 0.5}s`
+                        }}
+                    />
+                ))}
+            </div>
+        );
+    };
 
     return (
         <div className="flex h-[calc(100vh-4rem)] overflow-hidden relative">
@@ -920,39 +898,19 @@ export default function AITutor() {
                 {/* Input Area */}
                 <div className="sticky bottom-0 bg-background/80 backdrop-blur border-t border-border p-4">
                     <div className="max-w-4xl mx-auto flex flex-col gap-2">
-                        <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-2">
-                            {/* File Upload Button */}
-                            <div className="relative">
-                                <button
-                                    className="p-2 hover:bg-secondary rounded-lg transition-colors text-muted-foreground hover:text-foreground"
-                                    disabled={uploading}
-                                    title="Upload file (image, PDF, text)"
-                                >
-                                    {uploading ? (
-                                        <Loader2 className="h-5 w-5 animate-spin" />
-                                    ) : (
-                                        <Paperclip className="h-5 w-5" />
-                                    )}
-                                </button>
-                                <input
-                                    type="file"
-                                    accept="image/*,.pdf,.txt,.md"
-                                    onChange={handleFileUpload}
-                                    className="absolute inset-0 opacity-0 cursor-pointer"
-                                    disabled={uploading}
-                                />
-                            </div>
+                        {renderFrequencyVisualization()}
 
+                        <div className="flex items-end gap-2 rounded-xl border border-border bg-card p-2">
                             {/* Voice Recording Button */}
                             <button
                                 onClick={toggleRecording}
-                                className={`p-2 rounded-lg transition-colors ${isRecording
+                                className={`p-2 rounded-lg transition-colors ${listening
                                     ? "bg-red-500/20 text-red-500 animate-pulse"
                                     : "hover:bg-secondary text-muted-foreground hover:text-foreground"
                                     }`}
-                                title={isRecording ? "Stop recording" : "Start voice recording"}
+                                title={listening ? "Stop recording" : "Start voice recording"}
                             >
-                                {isRecording ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                                {listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
                             </button>
 
                             {/* Text Input */}
@@ -967,16 +925,15 @@ export default function AITutor() {
                                         send();
                                     }
                                 }}
-                                placeholder={isRecording ? "Listening..." : "Ask GC AI anything about your subjects…"}
+                                placeholder={listening ? "Listening..." : "Ask GC AI anything about your subjects…"}
                                 className="flex-1 bg-transparent px-2 py-2 text-sm focus:outline-none resize-none min-h-[40px] max-h-[200px]"
                                 rows={1}
-                                disabled={isRecording}
                             />
 
                             {/* Send Button */}
                             <Button
                                 onClick={() => send()}
-                                disabled={streaming || (!input.trim() && !isRecording)}
+                                disabled={streaming || (!input.trim() && !listening)}
                                 data-testid="ai-send-btn"
                                 size="icon"
                                 className="shadow-glow shrink-0"
@@ -989,16 +946,21 @@ export default function AITutor() {
                             </Button>
                         </div>
 
-                        {isRecording && (
-                            <div className="flex items-center gap-2 text-xs text-red-500 animate-pulse">
-                                <div className="h-2 w-2 rounded-full bg-red-500" />
-                                Recording... Speak now
-                                <button
-                                    onClick={stopRecording}
-                                    className="ml-auto text-muted-foreground hover:text-foreground"
-                                >
-                                    <StopCircle className="h-4 w-4" />
-                                </button>
+                        {listening && (
+                            <div className="flex items-center justify-between text-xs text-red-500 animate-pulse">
+                                <div className="flex items-center gap-2">
+                                    <div className="h-2 w-2 rounded-full bg-red-500" />
+                                    Recording... Speak now
+                                </div>
+                                <div className="text-muted-foreground text-[10px]">
+                                    {input.length > 0 ? `${input.length} chars` : 'Listening...'}
+                                </div>
+                            </div>
+                        )}
+
+                        {!browserSupportsSpeechRecognition && (
+                            <div className="text-xs text-yellow-500 text-center">
+                                Speech recognition not supported. Please use Chrome or Edge.
                             </div>
                         )}
 
