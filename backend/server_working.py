@@ -2163,6 +2163,59 @@ async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)
 # Drafts
 # ============================================================
 
+# ============================================================
+# Drafts
+# ============================================================
+
+@api_router.post("/drafts")
+async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
+    try:
+        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
+
+        # Check if draft already exists
+        existing = await db.drafts.find_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id
+        })
+
+        if existing:
+            # Remove draft
+            result = await db.drafts.delete_one({
+                "user_id": user["user_id"], 
+                "paper_id": req.paper_id
+            })
+            logger.info(f"Drafts - Removed draft for {req.paper_id}")
+            return {"saved": False}
+        else:
+            # Create draft with a unique draft_id
+            draft_doc = {
+                "draft_id": f"draft_{uuid.uuid4().hex[:12]}",
+                "user_id": user["user_id"],
+                "paper_id": req.paper_id,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            result = await db.drafts.insert_one(draft_doc)
+            logger.info(f"Drafts - Saved draft for {req.paper_id} with id: {result.inserted_id}")
+            return {"saved": True}
+            
+    except Exception as e:
+        logger.error(f"Drafts error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update draft: {str(e)}")
+
+@api_router.delete("/drafts/{paper_id}")
+async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
+    try:
+        result = await db.drafts.delete_one({
+            "user_id": user["user_id"], 
+            "paper_id": paper_id
+        })
+        if result.deleted_count == 0:
+            logger.warning(f"Drafts - No draft found for paper {paper_id}")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.get("/drafts")
 async def list_drafts(user: dict = Depends(get_current_user)):
     try:
@@ -2200,7 +2253,6 @@ async def list_drafts(user: dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"List drafts error: {e}")
         return []
-
 # ============================================================
 # Generate Video from Highlighted Text
 # ============================================================
