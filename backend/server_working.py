@@ -2159,6 +2159,10 @@ async def get_study_time_for_date(user_id: str, date: datetime.date) -> int:
 
     return attempt_seconds + reading_seconds
 
+
+
+
+
 async def update_user_streak(user: dict) -> dict:
     """
     Update streak, XP, and level based on today's study time.
@@ -2179,7 +2183,7 @@ async def update_user_streak(user: dict) -> dict:
 
     if met_goal:
         if last_met_date == today:
-            # Already counted today, do nothing
+            # Already counted today – do nothing
             pass
         else:
             # Update streak
@@ -2207,7 +2211,7 @@ async def update_user_streak(user: dict) -> dict:
                 {"$set": {"level": new_level}}
             )
     else:
-        # Did not meet goal today; only reset via daily job
+        # Did not meet goal today – only reset via daily job
         pass
 
     return {
@@ -2217,6 +2221,11 @@ async def update_user_streak(user: dict) -> dict:
         "today_seconds": today_seconds,
         "goal_seconds": goal_seconds
     }
+
+
+
+
+
 
 def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: str):
     if not BREVO_API_KEY:
