@@ -1347,8 +1347,6 @@
 
 
 
-
-
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -1626,6 +1624,7 @@ function AuthPDFViewer({ paperId }) {
     const [pdfUrl, setPdfUrl] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const urlRef = useRef(null);
 
     useEffect(() => {
         const fetchPdf = async () => {
@@ -1641,6 +1640,7 @@ function AuthPDFViewer({ paperId }) {
                 // Create a blob URL for the PDF
                 const blob = new Blob([response.data], { type: 'application/pdf' });
                 const url = URL.createObjectURL(blob);
+                urlRef.current = url;
                 setPdfUrl(url);
             } catch (err) {
                 console.error('Failed to load PDF:', err);
@@ -1655,12 +1655,14 @@ function AuthPDFViewer({ paperId }) {
             fetchPdf();
         }
 
-        // Cleanup blob URL
+        // Cleanup blob URL when component unmounts
         return () => {
-            if (pdfUrl) {
-                URL.revokeObjectURL(pdfUrl);
+            if (urlRef.current) {
+                URL.revokeObjectURL(urlRef.current);
+                urlRef.current = null;
             }
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [paperId]);
 
     if (loading) {
@@ -1859,7 +1861,7 @@ export default function PaperReader() {
     };
 
     // ============================================================
-    // PDF Viewer plugins (no longer needed for the new viewer)
+    // Load paper data
     // ============================================================
     useEffect(() => {
         api.get(`/papers/${paperId}`).then((r) => setPaper(r.data)).catch(() => toast.error("Paper not found"));
@@ -1904,7 +1906,9 @@ export default function PaperReader() {
             {/* header */}
             <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
                 <div className="flex items-center gap-3">
-                    <Button variant="ghost" size="sm" onClick={() => navigate("/study")}><ArrowLeft className="h-4 w-4 mr-1" /> Back</Button>
+                    <Button variant="ghost" size="sm" onClick={() => navigate("/study")}>
+                        <ArrowLeft className="h-4 w-4 mr-1" /> Back
+                    </Button>
                     <div>
                         <h1 className="text-xl font-display font-bold leading-tight">{paper.title}</h1>
                         <p className="text-sm text-muted-foreground">{paper.subject} · {paper.level} · {paper.year} · Paper {paper.paper_number}</p>
@@ -1946,7 +1950,9 @@ export default function PaperReader() {
                         <div className="radial-glow" />
                         <div className="relative z-10">
                             <div className="flex items-center gap-2 mb-1">
-                                <div className="h-9 w-9 rounded-lg bg-primary flex items-center justify-center shadow-glow"><Bot className="h-5 w-5 text-white" /></div>
+                                <div className="h-9 w-9 rounded-lg bg-primary flex items-center justify-center shadow-glow">
+                                    <Bot className="h-5 w-5 text-white" />
+                                </div>
                                 <div>
                                     <h2 className="font-display font-semibold">GC AI Assistant</h2>
                                     <p className="text-xs text-muted-foreground">Highlight any question, then tap "Ask GC AI".</p>
@@ -2023,14 +2029,20 @@ export default function PaperReader() {
                     {/* QA list */}
                     {qa && (
                         <div id="qa-section" className="rounded-xl border border-border bg-card p-5 space-y-4 max-h-[75vh] overflow-y-auto">
-                            <p className="font-display font-semibold flex items-center gap-2 sticky top-0 bg-card pb-1"><FileText className="h-4 w-4 text-primary" /> Worked Solutions</p>
+                            <p className="font-display font-semibold flex items-center gap-2 sticky top-0 bg-card pb-1">
+                                <FileText className="h-4 w-4 text-primary" /> Worked Solutions
+                            </p>
                             {qa.map((item, i) => (
                                 <div key={i} className="rounded-lg border border-border bg-secondary/30 p-4">
-                                    <div className="font-medium text-sm mb-2 flex gap-1"><span>Q{item.number}.</span><Markdown>{item.question}</Markdown></div>
+                                    <div className="font-medium text-sm mb-2 flex gap-1">
+                                        <span>Q{item.number}.</span><Markdown>{item.question}</Markdown>
+                                    </div>
                                     <ol className="list-decimal list-inside space-y-1 text-sm text-foreground/90">
                                         {(item.steps || []).map((s, j) => <li key={j} className="[&_.md-body]:inline [&_p]:inline"><Markdown>{s}</Markdown></li>)}
                                     </ol>
-                                    <div className="text-sm mt-2 font-semibold text-success flex gap-1 [&_.md-body]:inline [&_p]:inline"><span>Answer:</span><Markdown>{item.answer}</Markdown></div>
+                                    <div className="text-sm mt-2 font-semibold text-success flex gap-1 [&_.md-body]:inline [&_p]:inline">
+                                        <span>Answer:</span><Markdown>{item.answer}</Markdown>
+                                    </div>
                                 </div>
                             ))}
                         </div>
