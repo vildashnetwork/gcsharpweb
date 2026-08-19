@@ -887,6 +887,7 @@
 
 
 
+
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
@@ -909,34 +910,62 @@ const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
 
 // ============================================================
-// Helper: light normalization of AI responses before Markdown rendering
+// Helper: Preprocess AI response for better Markdown rendering
 // ============================================================
-// The backend prompt now asks the AI directly for clean, structured
-// Markdown (headings, numbered **Step N:** lines, LaTeX math, a boxed
-// final answer) — see MATH_FORMATTING_INSTRUCTIONS on the server. So
-// this only needs to fix delimiter syntax the model might still use
-// interchangeably, not rewrite the AI's structure or wording.
-//
-// Previously this also force-bolded keywords like "Step"/"Given" with
-// regex and collapsed spacing around "=" signs. That fought with the
-// AI's own Markdown (e.g. turning "**Step 1:**" into "****Step** 1:**")
-// and risked corrupting LaTeX spacing, so it's been removed — the
-// prompt-level formatting instructions are the real fix, not
-// after-the-fact regex patching.
 function preprocessAIResponse(text) {
     if (!text) return "";
 
     let processed = text;
 
-    // Collapse excessive blank lines
+    // 1. Clean up excessive newlines
     processed = processed.replace(/\n{3,}/g, '\n\n');
 
-    // remark-math expects $...$ / $$...$$ — normalize \( \) and \[ \]
-    // in case the model still emits LaTeX-style delimiters.
+    // 2. Ensure proper spacing after headings
+    processed = processed.replace(/(#{1,6}\s+[^\n]+)(\S)/g, '$1\n\n$2');
+
+    // 3. Format "Page X" references
+    processed = processed.replace(/Page\s+(\d+)/gi, '**Page $1**');
+
+    // 4. Format mark/score indicators
+    processed = processed.replace(/\((\d+)\s+marks\)/gi, '*(($1 marks))*');
+
+    // 5. Bold important keywords
+    const keywords = [
+        'Solution', 'Answer', 'Step', 'Given', 'Find', 'Calculate',
+        'Total time', 'Distance', 'Velocity', 'Acceleration',
+        'Equilibrium', 'Centre of gravity', 'Force'
+    ];
+    keywords.forEach(keyword => {
+        const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
+        processed = processed.replace(regex, `**${keyword}**`);
+    });
+
+    // 6. Format equations with proper spacing
+    processed = processed.replace(/([a-z])\s*=\s*([0-9]+)/gi, '$1 = $2');
+    processed = processed.replace(/([0-9]+)\s*([a-z])/gi, '$1$2');
+
+    // 7. Ensure math delimiters are properly formatted
+    // Convert \[ \] to $$ $$ for block math
     processed = processed.replace(/\\\[/g, '$$');
     processed = processed.replace(/\\\]/g, '$$');
+    // Convert \( \) to $ $ for inline math
     processed = processed.replace(/\\\(/g, '$');
     processed = processed.replace(/\\\)/g, '$');
+
+    // 8. Format steps with numbers
+    processed = processed.replace(/(Step\s*(\d+))/gi, '**$1**');
+
+    // 9. Format sub-sections
+    processed = processed.replace(/([a-z]\)\s+)/g, '\n\n**$1**');
+    processed = processed.replace(/([0-9]+\)\s+)/g, '\n\n**$1**');
+    processed = processed.replace(/(\([a-z]\)\s+)/g, '\n\n**$1**');
+
+    // 10. Clean up extra spaces
+    processed = processed.replace(/  +/g, ' ');
+    processed = processed.replace(/\n\s*\n/g, '\n\n');
+
+    // 11. Add horizontal rules between major sections
+    processed = processed.replace(/\n\s*---\s*\n/g, '\n\n---\n\n');
 
     return processed.trim();
 }
@@ -982,10 +1011,7 @@ function useActiveReadingTimer(paperId) {
             const body = JSON.stringify({ seconds });
 
             if (useBeacon && navigator.sendBeacon) {
-                // "text/plain" avoids a CORS preflight that a beacon can't
-                // perform — FastAPI still parses the body as JSON regardless
-                // of the declared content-type.
-                navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
+                navigator.sendBeacon(url, new Blob([body], { type: "application/json" }));
                 setLastSavedAt(Date.now());
                 return;
             }
@@ -1081,7 +1107,9 @@ export default function PaperReader() {
         setShowAskButton(false);
         try {
             const { data } = await api.post("/papers/ask", { paper_id: paperId, question });
-            setAskAnswer(preprocessAIResponse(data.answer));
+            // ✅ Preprocess the answer for better readability
+            const processedAnswer = preprocessAIResponse(data.answer);
+            setAskAnswer(processedAnswer);
         } catch {
             setAskAnswer("Sorry, I couldn't solve that. Please try again.");
         }
@@ -1243,7 +1271,7 @@ export default function PaperReader() {
                         </div>
                     </div>
 
-                    {/* Highlight ask answer - with structured Markdown + LaTeX */}
+                    {/* Highlight ask answer - with structured Markdown */}
                     {askOpen && (
                         <div
                             ref={answerRef}
