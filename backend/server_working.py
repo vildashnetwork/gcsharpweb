@@ -2160,7 +2160,10 @@ async def get_study_time_for_date(user_id: str, date: datetime.date) -> int:
     return attempt_seconds + reading_seconds
 
 async def update_user_streak(user: dict) -> dict:
-    """Update streak and level based on today's study time."""
+    """
+    Update streak, XP, and level based on today's study time.
+    XP is awarded immediately when the daily goal is met.
+    """
     user_id = user["user_id"]
     today = datetime.now(timezone.utc).date()
     today_seconds = await get_study_time_for_date(user_id, today)
@@ -2178,27 +2181,42 @@ async def update_user_streak(user: dict) -> dict:
         if last_met_date == today:
             # Already counted today, do nothing
             pass
-        elif last_met_date == today - timedelta(days=1):
-            # Consecutive day
-            streak += 1
         else:
-            # Reset streak to 1
-            streak = 1
-        # Update last_goal_met_date to today
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"streak": streak, "last_goal_met_date": today.isoformat()}}
-        )
+            # Update streak
+            if last_met_date == today - timedelta(days=1):
+                streak += 1
+            else:
+                streak = 1
+
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"streak": streak, "last_goal_met_date": today.isoformat()}}
+            )
+
+            # 🎯 Award XP immediately: XP = streak * 5
+            xp_gain = streak * 5
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$inc": {"xp": xp_gain}}
+            )
+
+            # Update level based on streak
+            new_level = 1 + streak // 7
+            await db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"level": new_level}}
+            )
     else:
-        # Did not meet goal today; we only reset when a day passes, will be handled by daily job
+        # Did not meet goal today; only reset via daily job
         pass
 
-    # Update level based on streak
-    new_level = 1 + streak // 7
-    if new_level != user.get("level", 1):
-        await db.users.update_one({"user_id": user_id}, {"$set": {"level": new_level}})
-
-    return {"streak": streak, "level": new_level, "met_goal": met_goal, "today_seconds": today_seconds, "goal_seconds": goal_seconds}
+    return {
+        "streak": streak,
+        "level": user.get("level", 1),
+        "met_goal": met_goal,
+        "today_seconds": today_seconds,
+        "goal_seconds": goal_seconds
+    }
 
 def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: str):
     if not BREVO_API_KEY:
@@ -2248,8 +2266,7 @@ async def daily_reminder_job():
         goal = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
 
         if seconds >= goal:
-            # --- Goal met ---
-            # Update streak
+            # Goal met yesterday – ensure streak is correct
             last_met = user.get("last_goal_met_date")
             if last_met:
                 last_met_date = datetime.fromisoformat(last_met).date()
@@ -2257,37 +2274,27 @@ async def daily_reminder_job():
                 last_met_date = None
 
             if last_met_date == yesterday:
-                streak = user.get("streak", 0)   # already counted today, keep same
-            elif last_met_date == yesterday - timedelta(days=1):
-                streak = user.get("streak", 0) + 1
+                # Already counted, do nothing
+                pass
             else:
-                streak = 1
-
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"streak": streak, "last_goal_met_date": yesterday.isoformat()}}
-            )
-
-            # 🎯 XP = 5 × streak  (1 streak = 5 XP)
-            xp_gain = streak * 5
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {"xp": xp_gain}}
-            )
-
-            # Update level (still based on streak)
-            new_level = 1 + streak // 7
-            await db.users.update_one({"user_id": user_id}, {"$set": {"level": new_level}})
-
+                # Update streak (should already be done by real-time, but just in case)
+                if last_met_date == yesterday - timedelta(days=1):
+                    streak = user.get("streak", 0) + 1
+                else:
+                    streak = 1
+                await db.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"streak": streak, "last_goal_met_date": yesterday.isoformat()}}
+                )
+                # No XP awarded here – already done in real‑time
         else:
-            # --- Goal missed ---
-            # Reset streak
+            # Missed yesterday – reset streak
             await db.users.update_one(
                 {"user_id": user_id},
                 {"$set": {"streak": 0}}
             )
 
-            # Send reminder email (unchanged)
+            # Send reminder email
             name = user.get("name", "Student")
             subject = "📚 Don't break your study streak!"
             html = f"""
@@ -2304,6 +2311,7 @@ async def daily_reminder_job():
                 "date": yesterday.isoformat(),
                 "sent_at": now.isoformat()
             })
+
 # ============================================================
 # Streak API Endpoint
 # ============================================================
