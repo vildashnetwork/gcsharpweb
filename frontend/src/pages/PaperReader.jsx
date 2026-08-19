@@ -823,6 +823,7 @@ export default function PaperReader() {
     };
 
     const handleGenerateVideoClick = () => {
+        window.location.href = "#video-solution";
         if (selectedText) {
             generateHighlightVideo(selectedText);
             setShowAskButton(false);
@@ -990,7 +991,7 @@ export default function PaperReader() {
                         </div>
                     )}
 
-                    {/* Video player */}
+                    {/* Video player video-solution video-solution*/}
                     {video && (
                         <div id="video-solution">
                             <VideoSolutionPlayer scenes={video.scenes} title={video.title} question={video.question} />
