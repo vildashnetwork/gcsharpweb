@@ -436,25 +436,64 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // pages/PaperReader.jsx
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
-import { selectionModePlugin } from '@react-pdf-viewer/selection-mode';
-import { toolbarPlugin } from '@react-pdf-viewer/toolbar';
+import { highlightPlugin, Trigger } from '@react-pdf-viewer/highlight';
 import '@react-pdf-viewer/core/lib/styles/index.css';
 import '@react-pdf-viewer/default-layout/lib/styles/index.css';
+import '@react-pdf-viewer/highlight/lib/styles/index.css';
 import api, { API } from "../lib/api";
 import { Button } from "../components/ui/button";
 import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
 import Markdown from "../components/Markdown";
 import {
-    ArrowLeft, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Loader2, Sparkles, Bot,
+    ArrowLeft, Loader2, Sparkles, Bot,
     Bookmark, BookmarkCheck, FileText, Film, ListChecks, X, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
 
+// react-pdf-viewer bundles its own copy of pdfjs-dist internally, and the
+// worker script loaded below MUST be the exact same version or the viewer
+// throws "API version X does not match Worker version Y" and refuses to
+// render. If this ever happens again after a dependency upgrade, check
+// node_modules/pdfjs-dist/package.json for the real version and update this
+// constant to match. (Since pdfjs-dist v4, the worker file is .mjs, not .js.)
+const PDFJS_VERSION = "3.11.174";
+const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
 // ============================================================
 // Active reading timer
 // ============================================================
@@ -552,89 +591,12 @@ export default function PaperReader() {
     const [video, setVideo] = useState(null);
     const [videoLoading, setVideoLoading] = useState(false);
 
-    const [selection, setSelection] = useState(null);
-    const [isTouch, setIsTouch] = useState(false);
     const [askOpen, setAskOpen] = useState(false);
     const [askText, setAskText] = useState("");
     const [askAnswer, setAskAnswer] = useState("");
     const [askLoading, setAskLoading] = useState(false);
-    const [showAskButton, setShowAskButton] = useState(false);
-    const [selectedText, setSelectedText] = useState("");
 
-    // PDF Viewer plugins
-    const selectionModePluginInstance = selectionModePlugin({
-        selectionMode: 'text',
-        enableTouchSelection: true,
-    });
-
-    const toolbarPluginInstance = toolbarPlugin();
-    const defaultLayoutPluginInstance = defaultLayoutPlugin({
-        toolbarPlugin: toolbarPluginInstance,
-    });
-
-    useEffect(() => {
-        api.get(`/papers/${paperId}`).then((r) => setPaper(r.data)).catch(() => toast.error("Paper not found"));
-    }, [paperId]);
-
-    const isPaper1 = paper?.paper_number === 1;
-
-    // Handle text selection from PDF viewer
-    const handleTextSelection = useCallback((e) => {
-        const selected = window.getSelection();
-        const text = selected?.toString().trim();
-
-        if (text && text.length > 3) {
-            const rect = selected?.getRangeAt(0)?.getBoundingClientRect();
-            if (rect) {
-                setSelectedText(text);
-                setSelection({
-                    text,
-                    x: rect.left + rect.width / 2,
-                    y: rect.top - 6,
-                });
-                setShowAskButton(true);
-                setIsTouch(true);
-            }
-        } else {
-            setSelectedText("");
-            setSelection(null);
-            setShowAskButton(false);
-        }
-    }, []);
-
-    // Handle selection from the PDF viewer's selection mode plugin
-    useEffect(() => {
-        const handleSelectionChange = () => {
-            const selected = window.getSelection();
-            const text = selected?.toString().trim();
-
-            if (text && text.length > 3) {
-                const range = selected?.getRangeAt(0);
-                if (range) {
-                    const rect = range.getBoundingClientRect();
-                    setSelectedText(text);
-                    setSelection({
-                        text,
-                        x: rect.left + rect.width / 2,
-                        y: rect.top - 6,
-                    });
-                    setShowAskButton(true);
-                    setIsTouch(true);
-                }
-            } else {
-                setSelectedText("");
-                setSelection(null);
-                setShowAskButton(false);
-            }
-        };
-
-        document.addEventListener('selectionchange', handleSelectionChange);
-        return () => document.removeEventListener('selectionchange', handleSelectionChange);
-    }, []);
-
-    const askAI = async (question) => {
-        setSelection(null);
-        setShowAskButton(false);
+    const askAI = useCallback(async (question) => {
         setAskOpen(true);
         setAskText(question);
         setAskAnswer("");
@@ -644,7 +606,58 @@ export default function PaperReader() {
             setAskAnswer(data.answer);
         } catch { setAskAnswer("Sorry, I couldn't solve that. Please try again."); }
         finally { setAskLoading(false); }
-    };
+    }, [paperId]);
+
+    // ============================================================
+    // PDF Viewer plugins
+    // ============================================================
+    // highlightPlugin handles both mouse and touch text selection itself —
+    // it positions renderHighlightTarget's popup relative to the selected
+    // text's own coordinates on the page, so it stays correctly placed
+    // through scrolling and zoom instead of the fixed/window-relative math
+    // a hand-rolled selectionchange listener needs (and gets wrong on
+    // mobile). We only use it as an ephemeral "Ask GC AI" trigger — never
+    // calling props.toggle() — so no permanent highlight marks are created.
+    const highlightPluginInstance = highlightPlugin({
+        trigger: Trigger.TextSelection,
+        renderHighlightTarget: (props) => (
+            <div
+                style={{
+                    position: 'absolute',
+                    left: `${props.selectionRegion.left}%`,
+                    top: `${props.selectionRegion.top + props.selectionRegion.height}%`,
+                    transform: 'translate(0, 8px)',
+                    zIndex: 50,
+                }}
+            >
+                <button
+                    onClick={() => {
+                        askAI(props.selectedText);
+                        props.cancel();
+                    }}
+                    className="flex items-center gap-1.5 rounded-full bg-primary text-white text-sm px-3 py-2 shadow-lg active:scale-95 transition-transform"
+                >
+                    <Sparkles className="h-4 w-4" />
+                    Ask GC AI
+                </button>
+            </div>
+        ),
+    });
+
+    // The full official toolbar (zoom, page nav, search, fit, download,
+    // print, fullscreen) instead of two dead custom buttons that dispatched
+    // a 'zoom' CustomEvent nothing was listening for. Sidebar tabs
+    // (thumbnails/bookmarks/attachments) are hidden — not useful for a
+    // single past paper and they just eat width in this two-column layout.
+    const defaultLayoutPluginInstance = defaultLayoutPlugin({
+        sidebarTabs: () => [],
+    });
+
+    useEffect(() => {
+        api.get(`/papers/${paperId}`).then((r) => setPaper(r.data)).catch(() => toast.error("Paper not found"));
+    }, [paperId]);
+
+    const isPaper1 = paper?.paper_number === 1;
 
     const genQA = async () => {
         setQaLoading(true);
@@ -710,72 +723,19 @@ export default function PaperReader() {
             </div>
 
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
-                {/* PDF viewer - Using @react-pdf-viewer */}
+                {/* PDF viewer - Using @react-pdf-viewer, with the real toolbar
+                    and the highlight plugin driving text selection */}
                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
-                    <div className="h-12 border-b border-border bg-secondary/40 flex items-center justify-between px-4">
-                        <div className="flex items-center gap-2">
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                    // Handle zoom out
-                                    const viewer = document.querySelector('.rpv-core__viewer');
-                                    if (viewer) {
-                                        const event = new CustomEvent('zoom', { detail: { scale: 0.8 } });
-                                        viewer.dispatchEvent(event);
-                                    }
-                                }}
-                            >
-                                <ZoomOut className="h-4 w-4" />
-                            </Button>
-                            <span className="text-sm">100%</span>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                    // Handle zoom in
-                                    const viewer = document.querySelector('.rpv-core__viewer');
-                                    if (viewer) {
-                                        const event = new CustomEvent('zoom', { detail: { scale: 1.2 } });
-                                        viewer.dispatchEvent(event);
-                                    }
-                                }}
-                            >
-                                <ZoomIn className="h-4 w-4" />
-                            </Button>
-                        </div>
-                        <span className="text-sm text-muted-foreground">
-                            {paper.subject} · {paper.year}
-                        </span>
-                    </div>
-
-                    <div
-                        className="max-h-[75vh] overflow-auto bg-secondary/20"
-                        onMouseUp={handleTextSelection}
-                        onTouchEnd={handleTextSelection}
-                    >
-                        <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
+                    <div className="max-h-[80vh] overflow-auto bg-secondary/20">
+                        <Worker workerUrl={PDF_WORKER_URL}>
                             <Viewer
                                 fileUrl={`${API}/papers/${paperId}/pdf`}
-                                plugins={[selectionModePluginInstance, defaultLayoutPluginInstance]}
+                                plugins={[highlightPluginInstance, defaultLayoutPluginInstance]}
                                 defaultScale={SpecialZoomLevel.PageFit}
                                 enableSmoothScroll={true}
                             />
                         </Worker>
                     </div>
-
-                    {/* Ask GC AI — Fixed button at top-left on mobile */}
-                    {showAskButton && selection && (
-                        <div className="absolute top-4 left-4 z-50 sm:hidden">
-                            <button
-                                onClick={() => askAI(selectedText || selection.text)}
-                                className="flex items-center gap-1.5 rounded-full bg-primary text-white text-sm px-3 py-2 shadow-lg hover:scale-95 transition-transform"
-                            >
-                                <Sparkles className="h-4 w-4" />
-                                Ask GC AI
-                            </button>
-                        </div>
-                    )}
                 </div>
 
                 {/* AI panel */}
@@ -838,24 +798,6 @@ export default function PaperReader() {
                     )}
                 </div>
             </div>
-
-            {/* Ask GC AI — desktop: floating tooltip anchored to selection */}
-            {selection && !isTouch && (
-                <button
-                    data-testid="ask-ai-popup"
-                    onMouseDown={(e) => { e.preventDefault(); askAI(selection.text); }}
-                    style={{
-                        position: "fixed",
-                        top: Math.max(8, selection.y - 38),
-                        left: Math.min(Math.max(80, selection.x), window.innerWidth - 80),
-                        transform: "translateX(-50%)",
-                        zIndex: 60,
-                    }}
-                    className="hidden sm:flex items-center gap-1.5 rounded-full bg-primary text-white text-sm px-3 py-1.5 shadow-glow hover:scale-95 transition-transform"
-                >
-                    <Sparkles className="h-3.5 w-3.5" /> Ask GC AI
-                </button>
-            )}
         </div>
     );
 }
