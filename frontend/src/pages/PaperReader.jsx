@@ -436,13 +436,15 @@
 
 
 
-
-
+// pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Document, Page, pdfjs } from "react-pdf";
-import "react-pdf/dist/Page/TextLayer.css";
-import "react-pdf/dist/Page/AnnotationLayer.css";
+import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
+import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
+import { selectionModePlugin } from '@react-pdf-viewer/selection-mode';
+import { toolbarPlugin } from '@react-pdf-viewer/toolbar';
+import '@react-pdf-viewer/core/lib/styles/index.css';
+import '@react-pdf-viewer/default-layout/lib/styles/index.css';
 import api, { API } from "../lib/api";
 import { Button } from "../components/ui/button";
 import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
@@ -452,8 +454,6 @@ import {
     Bookmark, BookmarkCheck, FileText, Film, ListChecks, X, Clock,
 } from "lucide-react";
 import { toast } from "sonner";
-
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 // ============================================================
 // Active reading timer
@@ -547,11 +547,6 @@ export default function PaperReader() {
     const { displaySeconds, saving } = useActiveReadingTimer(paperId);
 
     const [paper, setPaper] = useState(null);
-    const [numPages, setNumPages] = useState(0);
-    const [page, setPage] = useState(1);
-    const [scale, setScale] = useState(1.1);
-    const [width, setWidth] = useState(640);
-
     const [qa, setQa] = useState(null);
     const [qaLoading, setQaLoading] = useState(false);
     const [video, setVideo] = useState(null);
@@ -564,45 +559,77 @@ export default function PaperReader() {
     const [askAnswer, setAskAnswer] = useState("");
     const [askLoading, setAskLoading] = useState(false);
     const [showAskButton, setShowAskButton] = useState(false);
+    const [selectedText, setSelectedText] = useState("");
+
+    // PDF Viewer plugins
+    const selectionModePluginInstance = selectionModePlugin({
+        selectionMode: 'text',
+        enableTouchSelection: true,
+    });
+
+    const toolbarPluginInstance = toolbarPlugin();
+    const defaultLayoutPluginInstance = defaultLayoutPlugin({
+        toolbarPlugin: toolbarPluginInstance,
+    });
 
     useEffect(() => {
         api.get(`/papers/${paperId}`).then((r) => setPaper(r.data)).catch(() => toast.error("Paper not found"));
     }, [paperId]);
 
-    useEffect(() => {
-        const measure = () => {
-            if (containerRef.current) setWidth(Math.min(720, containerRef.current.offsetWidth - 32));
-        };
-        measure();
-        window.addEventListener("resize", measure);
-        return () => window.removeEventListener("resize", measure);
-    }, [paper]);
-
     const isPaper1 = paper?.paper_number === 1;
-    const pdfFile = useMemo(() => ({ url: `${API}/papers/${paperId}/pdf`, withCredentials: true }), [paperId]);
 
-    const handleSelection = useCallback((e) => {
-        const touchEvent = e?.type === "touchend";
-        if (touchEvent) setIsTouch(true);
+    // Handle text selection from PDF viewer
+    const handleTextSelection = useCallback((e) => {
+        const selected = window.getSelection();
+        const text = selected?.toString().trim();
 
-        const read = () => {
-            const sel = window.getSelection();
-            const text = sel?.toString().trim();
-            if (text && text.length > 3 && sel.rangeCount > 0) {
-                const rect = sel.getRangeAt(0).getBoundingClientRect();
-                setSelection({ text, x: rect.left + rect.width / 2, y: rect.top - 6 });
+        if (text && text.length > 3) {
+            const rect = selected?.getRangeAt(0)?.getBoundingClientRect();
+            if (rect) {
+                setSelectedText(text);
+                setSelection({
+                    text,
+                    x: rect.left + rect.width / 2,
+                    y: rect.top - 6,
+                });
                 setShowAskButton(true);
+                setIsTouch(true);
+            }
+        } else {
+            setSelectedText("");
+            setSelection(null);
+            setShowAskButton(false);
+        }
+    }, []);
+
+    // Handle selection from the PDF viewer's selection mode plugin
+    useEffect(() => {
+        const handleSelectionChange = () => {
+            const selected = window.getSelection();
+            const text = selected?.toString().trim();
+
+            if (text && text.length > 3) {
+                const range = selected?.getRangeAt(0);
+                if (range) {
+                    const rect = range.getBoundingClientRect();
+                    setSelectedText(text);
+                    setSelection({
+                        text,
+                        x: rect.left + rect.width / 2,
+                        y: rect.top - 6,
+                    });
+                    setShowAskButton(true);
+                    setIsTouch(true);
+                }
             } else {
+                setSelectedText("");
                 setSelection(null);
                 setShowAskButton(false);
             }
         };
 
-        if (touchEvent) {
-            setTimeout(read, 50);
-        } else {
-            read();
-        }
+        document.addEventListener('selectionchange', handleSelectionChange);
+        return () => document.removeEventListener('selectionchange', handleSelectionChange);
     }, []);
 
     const askAI = async (question) => {
@@ -683,43 +710,65 @@ export default function PaperReader() {
             </div>
 
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
-                {/* PDF viewer */}
+                {/* PDF viewer - Using @react-pdf-viewer */}
                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
-                    <div className="flex items-center justify-between px-4 h-12 border-b border-border bg-secondary/40">
-                        <div className="flex items-center gap-1">
-                            <button onClick={() => setPage((p) => Math.max(1, p - 1))} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><ChevronLeft className="h-4 w-4" /></button>
-                            <span className="text-sm px-2" data-testid="pdf-page-indicator">Page {page} / {numPages || "…"}</span>
-                            <button onClick={() => setPage((p) => Math.min(numPages, p + 1))} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><ChevronRight className="h-4 w-4" /></button>
+                    <div className="h-12 border-b border-border bg-secondary/40 flex items-center justify-between px-4">
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                    // Handle zoom out
+                                    const viewer = document.querySelector('.rpv-core__viewer');
+                                    if (viewer) {
+                                        const event = new CustomEvent('zoom', { detail: { scale: 0.8 } });
+                                        viewer.dispatchEvent(event);
+                                    }
+                                }}
+                            >
+                                <ZoomOut className="h-4 w-4" />
+                            </Button>
+                            <span className="text-sm">100%</span>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                    // Handle zoom in
+                                    const viewer = document.querySelector('.rpv-core__viewer');
+                                    if (viewer) {
+                                        const event = new CustomEvent('zoom', { detail: { scale: 1.2 } });
+                                        viewer.dispatchEvent(event);
+                                    }
+                                }}
+                            >
+                                <ZoomIn className="h-4 w-4" />
+                            </Button>
                         </div>
-                        <div className="flex items-center gap-1">
-                            <button onClick={() => setScale((s) => Math.max(0.6, s - 0.15))} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><ZoomOut className="h-4 w-4" /></button>
-                            <span className="text-sm px-1">{Math.round(scale * 100)}%</span>
-                            <button onClick={() => setScale((s) => Math.min(2, s + 0.15))} className="h-8 w-8 rounded-md hover:bg-secondary flex items-center justify-center"><ZoomIn className="h-4 w-4" /></button>
-                        </div>
-                    </div>
-                    <div
-                        className="max-h-[75vh] overflow-auto p-4 flex justify-center bg-secondary/20 relative"
-                        onMouseUp={handleSelection}
-                        onTouchEnd={handleSelection}
-                    >
-                        <Document
-                            file={pdfFile}
-                            onLoadSuccess={({ numPages }) => setNumPages(numPages)}
-                            loading={<div className="py-20"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>}
-                            error={<p className="py-20 text-sm text-muted-foreground">Could not load PDF.</p>}
-                        >
-                            <Page pageNumber={page} width={width * scale} renderTextLayer renderAnnotationLayer={false}
-                                className="shadow-lg rounded-lg overflow-hidden bg-white" />
-                        </Document>
+                        <span className="text-sm text-muted-foreground">
+                            {paper.subject} · {paper.year}
+                        </span>
                     </div>
 
-                    {/* ============================================================
-                        Ask GC AI — Fixed button at top-left on mobile
-                        ============================================================ */}
+                    <div
+                        className="max-h-[75vh] overflow-auto bg-secondary/20"
+                        onMouseUp={handleTextSelection}
+                        onTouchEnd={handleTextSelection}
+                    >
+                        <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
+                            <Viewer
+                                fileUrl={`${API}/papers/${paperId}/pdf`}
+                                plugins={[selectionModePluginInstance, defaultLayoutPluginInstance]}
+                                defaultScale={SpecialZoomLevel.PageFit}
+                                enableSmoothScroll={true}
+                            />
+                        </Worker>
+                    </div>
+
+                    {/* Ask GC AI — Fixed button at top-left on mobile */}
                     {showAskButton && selection && (
                         <div className="absolute top-4 left-4 z-50 sm:hidden">
                             <button
-                                onClick={() => askAI(selection.text)}
+                                onClick={() => askAI(selectedText || selection.text)}
                                 className="flex items-center gap-1.5 rounded-full bg-primary text-white text-sm px-3 py-2 shadow-lg hover:scale-95 transition-transform"
                             >
                                 <Sparkles className="h-4 w-4" />
