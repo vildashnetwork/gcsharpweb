@@ -466,16 +466,13 @@
 
 
 
-
 // pages/PaperReader.jsx
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
-import { highlightPlugin, Trigger } from '@react-pdf-viewer/highlight';
 import '@react-pdf-viewer/core/lib/styles/index.css';
 import '@react-pdf-viewer/default-layout/lib/styles/index.css';
-import '@react-pdf-viewer/highlight/lib/styles/index.css';
 import api, { API } from "../lib/api";
 import { Button } from "../components/ui/button";
 import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
@@ -486,14 +483,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-// react-pdf-viewer bundles its own copy of pdfjs-dist internally, and the
-// worker script loaded below MUST be the exact same version or the viewer
-// throws "API version X does not match Worker version Y" and refuses to
-// render. If this ever happens again after a dependency upgrade, check
-// node_modules/pdfjs-dist/package.json for the real version and update this
-// constant to match. (Since pdfjs-dist v4, the worker file is .mjs, not .js.)
+// PDF worker version
 const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
 // ============================================================
 // Active reading timer
 // ============================================================
@@ -595,12 +588,27 @@ export default function PaperReader() {
     const [askText, setAskText] = useState("");
     const [askAnswer, setAskAnswer] = useState("");
     const [askLoading, setAskLoading] = useState(false);
+    const [selectedText, setSelectedText] = useState("");
+    const [showAskButton, setShowAskButton] = useState(false);
+    const [isMobile, setIsMobile] = useState(false);
+
+    // Check if mobile
+    useEffect(() => {
+        const checkMobile = () => {
+            setIsMobile(window.innerWidth < 768);
+        };
+        checkMobile();
+        window.addEventListener('resize', checkMobile);
+        return () => window.removeEventListener('resize', checkMobile);
+    }, []);
 
     const askAI = useCallback(async (question) => {
+        if (!question || question.length < 3) return;
         setAskOpen(true);
         setAskText(question);
         setAskAnswer("");
         setAskLoading(true);
+        setShowAskButton(false);
         try {
             const { data } = await api.post("/papers/ask", { paper_id: paperId, question });
             setAskAnswer(data.answer);
@@ -609,46 +617,47 @@ export default function PaperReader() {
     }, [paperId]);
 
     // ============================================================
+    // Custom text selection handler
+    // ============================================================
+    const handleTextSelection = useCallback(() => {
+        const selection = window.getSelection();
+        const text = selection?.toString().trim();
+
+        if (text && text.length > 3) {
+            setSelectedText(text);
+            setShowAskButton(true);
+        } else {
+            setSelectedText("");
+            setShowAskButton(false);
+        }
+    }, []);
+
+    // Listen for selection changes
+    useEffect(() => {
+        const onSelectionChange = () => {
+            clearTimeout(window._selectionTimeout);
+            window._selectionTimeout = setTimeout(handleTextSelection, 100);
+        };
+
+        document.addEventListener('selectionchange', onSelectionChange);
+        return () => {
+            document.removeEventListener('selectionchange', onSelectionChange);
+            clearTimeout(window._selectionTimeout);
+        };
+    }, [handleTextSelection]);
+
+    // Clear selection when clicking the Ask button
+    const handleAskClick = () => {
+        if (selectedText) {
+            askAI(selectedText);
+            setShowAskButton(false);
+            window.getSelection()?.removeAllRanges();
+        }
+    };
+
+    // ============================================================
     // PDF Viewer plugins
     // ============================================================
-    // highlightPlugin handles both mouse and touch text selection itself —
-    // it positions renderHighlightTarget's popup relative to the selected
-    // text's own coordinates on the page, so it stays correctly placed
-    // through scrolling and zoom instead of the fixed/window-relative math
-    // a hand-rolled selectionchange listener needs (and gets wrong on
-    // mobile). We only use it as an ephemeral "Ask GC AI" trigger — never
-    // calling props.toggle() — so no permanent highlight marks are created.
-    const highlightPluginInstance = highlightPlugin({
-        trigger: Trigger.TextSelection,
-        renderHighlightTarget: (props) => (
-            <div
-                style={{
-                    position: 'absolute',
-                    left: `${props.selectionRegion.left}%`,
-                    top: `${props.selectionRegion.top + props.selectionRegion.height}%`,
-                    transform: 'translate(0, 8px)',
-                    zIndex: 50,
-                }}
-            >
-                <button
-                    onClick={() => {
-                        askAI(props.selectedText);
-                        props.cancel();
-                    }}
-                    className="flex items-center gap-1.5 rounded-full bg-primary text-white text-sm px-3 py-2 shadow-lg active:scale-95 transition-transform"
-                >
-                    <Sparkles className="h-4 w-4" />
-                    Ask GC AI
-                </button>
-            </div>
-        ),
-    });
-
-    // The full official toolbar (zoom, page nav, search, fit, download,
-    // print, fullscreen) instead of two dead custom buttons that dispatched
-    // a 'zoom' CustomEvent nothing was listening for. Sidebar tabs
-    // (thumbnails/bookmarks/attachments) are hidden — not useful for a
-    // single past paper and they just eat width in this two-column layout.
     const defaultLayoutPluginInstance = defaultLayoutPlugin({
         sidebarTabs: () => [],
     });
@@ -723,14 +732,13 @@ export default function PaperReader() {
             </div>
 
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
-                {/* PDF viewer - Using @react-pdf-viewer, with the real toolbar
-                    and the highlight plugin driving text selection */}
+                {/* PDF viewer */}
                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
                     <div className="max-h-[80vh] overflow-auto bg-secondary/20">
                         <Worker workerUrl={PDF_WORKER_URL}>
                             <Viewer
                                 fileUrl={`${API}/papers/${paperId}/pdf`}
-                                plugins={[highlightPluginInstance, defaultLayoutPluginInstance]}
+                                plugins={[defaultLayoutPluginInstance]}
                                 defaultScale={SpecialZoomLevel.PageFit}
                                 enableSmoothScroll={true}
                             />
@@ -798,6 +806,39 @@ export default function PaperReader() {
                     )}
                 </div>
             </div>
+
+            {/* ============================================================
+                Ask GC AI — Fixed button at top-right on mobile
+                ============================================================ */}
+            {showAskButton && selectedText && (
+                <div
+                    className={`fixed z-[9999] pointer-events-none ${isMobile
+                        ? "top-4 right-4"
+                        : "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
+                        }`}
+                >
+                    <button
+                        onClick={handleAskClick}
+                        className="pointer-events-auto flex items-center gap-2 rounded-full bg-primary text-white text-sm px-4 py-2.5 shadow-lg hover:bg-primary/90 transition-all active:scale-95"
+                    >
+                        <Sparkles className="h-4 w-4" />
+                        Ask GC AI
+                        {isMobile && (
+                            <span className="text-xs opacity-70 ml-1">
+                                ({selectedText.length} chars)
+                            </span>
+                        )}
+                    </button>
+                </div>
+            )}
+
+            {/* Mobile selection indicator */}
+            {showAskButton && selectedText && isMobile && (
+                <div className="fixed bottom-4 left-4 right-4 z-[9998] bg-black/80 text-white text-xs p-2 rounded-lg pointer-events-none text-center">
+                    <span className="opacity-70">Selected: </span>
+                    <span className="font-medium">{selectedText.slice(0, 50)}...</span>
+                </div>
+            )}
         </div>
     );
 }
