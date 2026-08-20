@@ -1381,34 +1381,37 @@ function formatDuration(totalSeconds) {
 // ============================================================
 // Streak & Level Badge Component
 // ============================================================
-function StreakBadge({ streak, level, progress, goalSeconds, todaySeconds }) {
-    const goalDisplay = goalSeconds >= 3600
-        ? `${Math.floor(goalSeconds / 3600)}h`
-        : `${Math.floor(goalSeconds / 60)}min`;
-
+function StreakBadge({ streak, level, progress }) {
     const progressPercent = Math.min(100, progress);
 
     return (
-        <div className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-sm tabular-nums">
-            <div className="flex items-center gap-1.5">
-                <Flame className={`h-3.5 w-3.5 ${streak > 0 ? 'text-orange-500' : 'text-muted-foreground'}`} />
+        <div className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-2.5 py-1.5 text-xs sm:px-3 sm:py-1.5 sm:text-sm tabular-nums">
+            {/* Streak */}
+            <div className="flex items-center gap-1 sm:gap-1.5">
+                <Flame className={`h-3 w-3 sm:h-3.5 sm:w-3.5 ${streak > 0 ? 'text-orange-500' : 'text-muted-foreground'}`} />
                 <span className="font-medium">{streak}</span>
             </div>
+
             <div className="w-px h-4 bg-border" />
-            <div className="flex items-center gap-1.5">
-                <Trophy className="h-3.5 w-3.5 text-yellow-500" />
+
+            {/* Level */}
+            <div className="flex items-center gap-1 sm:gap-1.5">
+                <Trophy className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-yellow-500" />
                 <span className="font-medium">{level}</span>
             </div>
+
             <div className="w-px h-4 bg-border" />
-            <div className="flex items-center gap-1.5 min-w-[60px]">
-                <Target className="h-3.5 w-3.5 text-muted-foreground" />
-                <div className="w-12 h-1.5 rounded-full bg-secondary overflow-hidden">
+
+            {/* Progress bar – hidden on extra‑small, shown from xs up */}
+            <div className="hidden xs:flex items-center gap-1 sm:gap-1.5 min-w-[45px] sm:min-w-[60px]">
+                <Target className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-muted-foreground" />
+                <div className="w-8 sm:w-12 h-1.5 rounded-full bg-secondary overflow-hidden">
                     <div
                         className="h-full bg-primary transition-all duration-500"
                         style={{ width: `${progressPercent}%` }}
                     />
                 </div>
-                <span className="text-[10px] text-muted-foreground">
+                <span className="text-[8px] sm:text-[10px] text-muted-foreground">
                     {Math.round(progressPercent)}%
                 </span>
             </div>
@@ -1674,35 +1677,44 @@ export default function PaperReader() {
                     </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3">
                     {/* Reading timer */}
                     <div
                         data-testid="reading-timer"
                         title="Time spent actively reading this paper"
-                        className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-sm tabular-nums"
+                        className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/40 px-2.5 py-1.5 text-xs sm:text-sm tabular-nums"
                     >
                         <span className="relative flex h-2 w-2">
                             <span className={`absolute inline-flex h-full w-full rounded-full bg-primary opacity-75 ${saving ? "animate-ping" : ""}`} />
                             <span className="relative inline-flex rounded-full h-2 w-2 bg-primary" />
                         </span>
-                        <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                        <Clock className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-muted-foreground" />
                         <span className="font-medium">{formatDuration(displaySeconds)}</span>
                     </div>
 
-                    {/* Streak badge */}
+                    {/* Streak badge – responsive */}
                     <StreakBadge
                         streak={streakData.streak}
                         level={streakData.level}
                         progress={streakData.progress_percent}
                         goalSeconds={streakData.goal_seconds}
                         todaySeconds={streakData.today_seconds}
+                        className="text-xs sm:text-sm"
                     />
 
-                    <Button variant={paper.saved ? "default" : "outline"} onClick={toggleDraft} data-testid="reader-save-draft" className="gap-2">
-                        {paper.saved ? <BookmarkCheck className="h-4 w-4" /> : <Bookmark className="h-4 w-4" />}
-                        {paper.saved ? "Saved" : "Save to Drafts"}
+                    {/* Save button */}
+                    <Button
+                        variant={paper.saved ? "default" : "outline"}
+                        onClick={toggleDraft}
+                        data-testid="reader-save-draft"
+                        className="gap-1.5 px-2.5 py-1.5 text-xs sm:text-sm sm:gap-2 sm:px-4"
+                    >
+                        {paper.saved ? <BookmarkCheck className="h-3.5 w-3.5 sm:h-4 sm:w-4" /> : <Bookmark className="h-3.5 w-3.5 sm:h-4 sm:w-4" />}
+                        <span className="hidden xs:inline">{paper.saved ? "Saved" : "Save to Drafts"}</span>
+                        <span className="xs:hidden">{paper.saved ? "Saved" : "Save"}</span>
                     </Button>
                 </div>
+
             </div>
 
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">

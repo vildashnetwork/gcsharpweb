@@ -9,7 +9,7 @@ import logging
 import asyncio
 import requests
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional
 
 import httpx
@@ -616,6 +616,7 @@ async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
                 "xp": 0,
                 "level": 1,
                 "streak": 0,
+                "accuracy": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.users.insert_one(dict(user))
@@ -684,6 +685,7 @@ async def email_register(req: EmailSignupRequest):
             "xp": 0,
             "level": 1,
             "streak": 0,
+            "accuracy": 0,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(dict(user))
@@ -771,6 +773,7 @@ async def register_user(req: RegisterRequest):
         "xp": 0,
         "level": 1,
         "streak": 0,
+        "accuracy": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.users.insert_one(user)
@@ -848,6 +851,7 @@ async def process_session(request: Request, response: Response):
             "xp": 0,
             "level": 1,
             "streak": 0,
+            "accuracy": 0,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.users.insert_one(dict(user))
@@ -934,6 +938,7 @@ async def exchange_session(request: Request, response: Response):
                 "xp": 0,
                 "level": 1,
                 "streak": 0,
+                "accuracy": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.users.insert_one(dict(user))
@@ -1149,7 +1154,16 @@ async def submit_attempt(req: SubmitAttemptRequest, user: dict = Depends(get_cur
     await db.users.update_one({"user_id": user["user_id"]},
                               {"$set": {"xp": new_xp, "level": new_level}})
     attempt.pop("_id", None)
-    return {"attempt": attempt, "xp_gain": xp_gain, "new_xp": new_xp, "new_level": new_level}
+
+    # Keep the profile's overall accuracy in sync with every new attempt,
+    # not just once a day, since quiz performance should reflect
+    # immediately rather than waiting for the next streak evaluation.
+    overall_accuracy = await recompute_user_accuracy(user["user_id"])
+
+    return {
+        "attempt": attempt, "xp_gain": xp_gain, "new_xp": new_xp,
+        "new_level": new_level, "accuracy": overall_accuracy,
+    }
 
 @api_router.get("/attempts")
 async def list_attempts(user: dict = Depends(get_current_user)):
@@ -2105,7 +2119,8 @@ async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict
     doc = await db.paper_reading_time.find_one(
         {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
     )
-    # Fire-and-forget streak update
+    # Fire-and-forget streak update — recomputes from fresh DB state rather
+    # than the possibly-stale `user` dict, so overlapping pings can't race.
     asyncio.create_task(update_user_streak(user))
     return {"ok": True, "total_seconds": doc.get("total_seconds", 0) if doc else seconds}
 
@@ -2117,11 +2132,32 @@ async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)
     return {"total_seconds": (doc or {}).get("total_seconds", 0)}
 
 # ============================================================
-# Streak and Reminders System
+# Streak, XP and Accuracy System
 # ============================================================
+# Rules implemented here:
+#  - A calendar day (UTC) counts as "complete" once the user's total
+#    study time that day (reading time + quiz time_spent) reaches their
+#    daily_commitment target.
+#  - Completing a day earns exactly STREAK_XP_PER_DAY (5) XP — flat,
+#    not scaled by streak length ("1 streak = 5 xp").
+#  - A day can only ever be credited ONCE. After it's credited,
+#    last_goal_met_date is set to that day, so nothing re-credits again
+#    until the calendar date actually changes — i.e. finishing today's
+#    streak means you wait for tomorrow to earn the next one.
+#  - Missing a day (not crediting it by the time the 4pm-WAT-equivalent
+#    check runs) resets streak to 0.
+#  - Level is the higher of the existing XP-based level (1 + xp // 500)
+#    and the streak-based level (1 + streak // 7), so a 7-day streak
+#    guarantees level 2 without ever lowering a level earned via XP.
+#  - `accuracy` on the user profile is the overall percentage of quiz
+#    questions answered correctly across all attempts, recomputed
+#    whenever a quiz is submitted and again during daily crediting, so
+#    it's always available on the profile without a separate call.
+
+STREAK_XP_PER_DAY = 5  # "1 streak = 5 xp"
 
 def parse_daily_commitment(commitment_str: str) -> int:
-    """Return required study seconds, default 3600 if unparsable."""
+    """Return required study seconds, default 3600 (1 hour) if unparsable."""
     if not commitment_str:
         return 3600
     commitment_str = commitment_str.lower().strip()
@@ -2135,10 +2171,10 @@ def parse_daily_commitment(commitment_str: str) -> int:
     else:
         return value * 60
 
-async def get_study_time_for_date(user_id: str, date: datetime.date) -> int:
-    """Returns total seconds studied on that date."""
-    start = datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc)
-    end = datetime.combine(date, datetime.max.time(), tzinfo=timezone.utc)
+async def get_study_time_for_date(user_id: str, target_date: date) -> int:
+    """Returns total seconds studied on that UTC calendar date."""
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+    end = datetime.combine(target_date, datetime.max.time(), tzinfo=timezone.utc)
 
     # Sum attempts time_spent
     attempts_cursor = db.attempts.find({
@@ -2149,24 +2185,71 @@ async def get_study_time_for_date(user_id: str, date: datetime.date) -> int:
     async for att in attempts_cursor:
         attempt_seconds += att.get("time_spent", 0)
 
-    # Sum reading time from daily_seconds map
+    # Sum reading time from each paper's daily_seconds map
     reading_docs = db.paper_reading_time.find({"user_id": user_id})
     reading_seconds = 0
-    date_str = date.isoformat()
+    date_str = target_date.isoformat()
     async for doc in reading_docs:
         daily = doc.get("daily_seconds", {})
         reading_seconds += daily.get(date_str, 0)
 
     return attempt_seconds + reading_seconds
 
+async def recompute_user_accuracy(user_id: str) -> float:
+    """
+    Recomputes overall quiz accuracy (0-100) across all of this user's
+    attempts and persists it on their profile, so it's available
+    instantly via /auth/me or /user/streak without a separate dashboard
+    call.
+    """
+    attempts = await db.attempts.find(
+        {"user_id": user_id}, {"_id": 0, "score": 1, "total": 1}
+    ).to_list(2000)
+    total_q = sum(a.get("total", 0) for a in attempts)
+    correct = sum(a.get("score", 0) for a in attempts)
+    accuracy = round((correct / total_q) * 100, 1) if total_q else 0.0
+    await db.users.update_one({"user_id": user_id}, {"$set": {"accuracy": accuracy}})
+    return accuracy
 
+async def _credit_streak_day(user_id: str, new_streak: int, credited_date: date) -> int:
+    """
+    Persists a newly-credited streak day, exactly once: bumps streak to
+    new_streak, records credited_date as last_goal_met_date (so this same
+    date can never be credited again — the caller must always check that
+    first), awards a flat STREAK_XP_PER_DAY XP, recomputes level as the
+    higher of the XP-based and streak-based levels, and refreshes
+    accuracy. Both the real-time path (update_user_streak) and the daily
+    fallback job (daily_reminder_job) route through this single function
+    so a day can never be double-credited or double-paid.
+    """
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "xp": 1})
+    new_xp = (user_doc.get("xp", 0) if user_doc else 0) + STREAK_XP_PER_DAY
+    xp_level = 1 + new_xp // 500
+    streak_level = 1 + new_streak // 7
+    new_level = max(xp_level, streak_level)
 
-
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "streak": new_streak,
+            "last_goal_met_date": credited_date.isoformat(),
+            "xp": new_xp,
+            "level": new_level,
+        }},
+    )
+    await recompute_user_accuracy(user_id)
+    logger.info(
+        f"Streak credited: user={user_id} date={credited_date.isoformat()} "
+        f"streak={new_streak} +{STREAK_XP_PER_DAY}xp level={new_level}"
+    )
+    return new_level
 
 async def update_user_streak(user: dict) -> dict:
     """
-    Update streak, XP, and level based on today's study time.
-    XP is awarded immediately when the daily goal is met.
+    Real-time check, called after every reading-time ping. Re-reads
+    streak state fresh from the DB (rather than trusting the possibly
+    stale `user` snapshot) so overlapping pings can't race each other
+    into double-crediting the same day.
     """
     user_id = user["user_id"]
     today = datetime.now(timezone.utc).date()
@@ -2174,57 +2257,30 @@ async def update_user_streak(user: dict) -> dict:
     goal_seconds = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
     met_goal = today_seconds >= goal_seconds
 
-    streak = user.get("streak", 0)
-    last_met = user.get("last_goal_met_date")
-    if last_met:
-        last_met_date = datetime.fromisoformat(last_met).date()
-    else:
-        last_met_date = None
+    fresh = await db.users.find_one(
+        {"user_id": user_id}, {"_id": 0, "streak": 1, "last_goal_met_date": 1, "level": 1}
+    ) or {}
+    streak = fresh.get("streak", 0)
+    last_met = fresh.get("last_goal_met_date")
+    last_met_date = date.fromisoformat(last_met) if last_met else None
+    level = fresh.get("level", 1)
 
-    if met_goal:
-        if last_met_date == today:
-            # Already counted today – do nothing
-            pass
-        else:
-            # Update streak
-            if last_met_date == today - timedelta(days=1):
-                streak += 1
-            else:
-                streak = 1
-
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"streak": streak, "last_goal_met_date": today.isoformat()}}
-            )
-
-            # 🎯 Award XP immediately: XP = streak * 5
-            xp_gain = streak * 5
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$inc": {"xp": xp_gain}}
-            )
-
-            # Update level based on streak
-            new_level = 1 + streak // 7
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"level": new_level}}
-            )
-    else:
-        # Did not meet goal today – only reset via daily job
-        pass
+    if met_goal and last_met_date != today:
+        # Consecutive day -> extend the streak; otherwise it had lapsed
+        # (or this is the first-ever credited day) -> restart at 1.
+        new_streak = streak + 1 if last_met_date == today - timedelta(days=1) else 1
+        level = await _credit_streak_day(user_id, new_streak, today)
+        streak = new_streak
+    # else: goal not yet met today, or today was already credited —
+    # nothing to do until the calendar date changes.
 
     return {
         "streak": streak,
-        "level": user.get("level", 1),
+        "level": level,
         "met_goal": met_goal,
         "today_seconds": today_seconds,
-        "goal_seconds": goal_seconds
+        "goal_seconds": goal_seconds,
     }
-
-
-
-
 
 
 def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: str):
@@ -2253,6 +2309,15 @@ def send_brevo_email(to_email: str, to_name: str, subject: str, html_content: st
         logger.error(f"Brevo send error: {e}")
 
 async def daily_reminder_job():
+    """
+    Runs hourly, only doing real work at hour==15 UTC (4pm WAT/Cameroon
+    time). Acts as the once-daily safety net: for anyone the real-time
+    path (update_user_streak) somehow missed crediting for yesterday, it
+    credits (or resets) their streak here — through the same
+    _credit_streak_day() function, so it can never double-credit a day
+    the real-time path already caught. Also sends the "you haven't
+    studied" reminder email to anyone who missed yesterday's goal.
+    """
     now = datetime.now(timezone.utc)
     if now.hour != 15:
         return
@@ -2274,52 +2339,41 @@ async def daily_reminder_job():
         seconds = await get_study_time_for_date(user_id, yesterday)
         goal = parse_daily_commitment(user.get("daily_commitment", "1 hour"))
 
-        if seconds >= goal:
-            # Goal met yesterday – ensure streak is correct
-            last_met = user.get("last_goal_met_date")
-            if last_met:
-                last_met_date = datetime.fromisoformat(last_met).date()
-            else:
-                last_met_date = None
+        last_met = user.get("last_goal_met_date")
+        last_met_date = date.fromisoformat(last_met) if last_met else None
 
+        if seconds >= goal:
             if last_met_date == yesterday:
-                # Already counted, do nothing
+                # Real-time path already credited this exact day — nothing to do.
                 pass
             else:
-                # Update streak (should already be done by real-time, but just in case)
-                if last_met_date == yesterday - timedelta(days=1):
-                    streak = user.get("streak", 0) + 1
-                else:
-                    streak = 1
-                await db.users.update_one(
-                    {"user_id": user_id},
-                    {"$set": {"streak": streak, "last_goal_met_date": yesterday.isoformat()}}
-                )
-                # No XP awarded here – already done in real‑time
+                streak = user.get("streak", 0)
+                new_streak = streak + 1 if last_met_date == yesterday - timedelta(days=1) else 1
+                await _credit_streak_day(user_id, new_streak, yesterday)
         else:
-            # Missed yesterday – reset streak
+            # Missed yesterday – reset streak, refresh accuracy, and remind.
             await db.users.update_one(
                 {"user_id": user_id},
                 {"$set": {"streak": 0}}
             )
+            await recompute_user_accuracy(user_id)
 
-            # Send reminder email
             name = user.get("name", "Student")
-            subject = "📚 Don't break your study streak!"
+            subject = "Don't break your study streak!"
             html = f"""
             <h2>Hi {name},</h2>
             <p>We noticed you didn't study yesterday. Your current streak is <strong>{user.get('streak', 0)}</strong> days.</p>
             <p>Remember, your daily goal is <strong>{user.get('daily_commitment', '1 hour')}</strong>.</p>
-            <p>Keep going and don't break the chain! 🔥</p>
+            <p>Keep going and don't break the chain!</p>
             <a href="{APP_URL}/dashboard" style="background:#4F46E5;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Go to Dashboard</a>
             """
             send_brevo_email(email, name, subject, html)
 
-            await db.reminder_log.insert_one({
-                "user_id": user_id,
-                "date": yesterday.isoformat(),
-                "sent_at": now.isoformat()
-            })
+        await db.reminder_log.insert_one({
+            "user_id": user_id,
+            "date": yesterday.isoformat(),
+            "sent_at": now.isoformat()
+        })
 
 # ============================================================
 # Streak API Endpoint
@@ -2334,6 +2388,8 @@ async def get_user_streak(user: dict = Depends(get_current_user)):
     return {
         "streak": user.get("streak", 0),
         "level": user.get("level", 1),
+        "xp": user.get("xp", 0),
+        "accuracy": user.get("accuracy", 0),
         "today_seconds": today_seconds,
         "goal_seconds": goal,
         "progress_percent": progress_percent,
