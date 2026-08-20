@@ -2439,6 +2439,14 @@ async def daily_reminder_job():
 # ============================================================
 # WebSocket Endpoint
 # ============================================================
+# NOTE: This is a raw Starlette/FastAPI WebSocket route (NOT Socket.IO).
+# Because it's registered on `api_router` (prefix="/api"), the actual
+# mounted path clients must connect to is:
+#     ws(s)://<host>/api/ws/notifications?user_id=<user_id>
+# A Socket.IO client will NOT work against this endpoint (different
+# handshake protocol/framing) and will typically receive a 403. Connect
+# with the native browser WebSocket API instead, e.g.:
+#     new WebSocket(`${wsBase}/api/ws/notifications?user_id=${userId}`)
 
 @api_router.websocket("/ws/notifications")
 async def websocket_notifications(websocket: WebSocket, user_id: str = None):

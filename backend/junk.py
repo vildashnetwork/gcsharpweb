@@ -10,16 +10,17 @@ import asyncio
 import requests
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import httpx
 from pypdf import PdfReader
-from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, Response as FastResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
+from bson import ObjectId
 
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
@@ -352,6 +353,8 @@ class ProfileUpdate(BaseModel):
     learning_style: Optional[str] = None
     specialization: Optional[str] = None
     onboarded: Optional[bool] = None
+    name: Optional[str] = None
+    picture: Optional[str] = None
 
 class ChatRequest(BaseModel):
     session_id: Optional[str] = None
@@ -452,6 +455,31 @@ class SettingsUpdate(BaseModel):
     email_notifications: Optional[bool] = None
     theme: Optional[str] = None
     language: Optional[str] = None
+
+# ============================================================
+# WebSocket Connection Manager for real‑time notifications
+# ============================================================
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, user_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[user_id] = websocket
+
+    def disconnect(self, user_id: str):
+        self.active_connections.pop(user_id, None)
+
+    async def send_personal_message(self, message: dict, user_id: str):
+        websocket = self.active_connections.get(user_id)
+        if websocket:
+            try:
+                await websocket.send_json(message)
+            except Exception:
+                self.disconnect(user_id)
+
+manager = ConnectionManager()
 
 # ============================================================
 # Auth Helpers
@@ -2172,8 +2200,23 @@ def parse_daily_commitment(commitment_str: str) -> int:
     else:          # minute, minutes, min, mins, m
         return value * 60
 
-
-
+async def create_notification(user_id: str, message: str, type: str = "info", link: Optional[str] = None) -> dict:
+    """
+    Creates a notification document in the database and sends it via WebSocket.
+    """
+    notif = {
+        "user_id": user_id,
+        "message": message,
+        "type": type,               # "streak", "reminder", "xp", "info"
+        "link": link,
+        "read": False,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.notifications.insert_one(notif)
+    notif["_id"] = str(result.inserted_id)
+    # Send real‑time via WebSocket
+    await manager.send_personal_message(notif, user_id)
+    return notif
 
 async def get_study_time_for_date(user_id: str, target_date: date) -> int:
     """Returns total seconds studied on that UTC calendar date."""
@@ -2245,6 +2288,13 @@ async def _credit_streak_day(user_id: str, new_streak: int, credited_date: date)
     logger.info(
         f"Streak credited: user={user_id} date={credited_date.isoformat()} "
         f"streak={new_streak} +{STREAK_XP_PER_DAY}xp level={new_level}"
+    )
+    # Send notification
+    await create_notification(
+        user_id,
+        f"🔥 You've reached a {new_streak}-day study streak!",
+        type="streak",
+        link="/dashboard"
     )
     return new_level
 
@@ -2372,12 +2422,95 @@ async def daily_reminder_job():
             <a href="{APP_URL}/dashboard" style="background:#4F46E5;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">Go to Dashboard</a>
             """
             send_brevo_email(email, name, subject, html)
+            # Create in-app notification
+            await create_notification(
+                user_id,
+                f"⏰ Don't forget to study today! Your daily goal is {user.get('daily_commitment', '1 hour')}.",
+                type="reminder",
+                link="/study"
+            )
 
         await db.reminder_log.insert_one({
             "user_id": user_id,
             "date": yesterday.isoformat(),
             "sent_at": now.isoformat()
         })
+
+# ============================================================
+# WebSocket Endpoint
+# ============================================================
+# NOTE: This is a raw Starlette/FastAPI WebSocket route (NOT Socket.IO).
+# Because it's registered on `api_router` (prefix="/api"), the actual
+# mounted path clients must connect to is:
+#     ws(s)://<host>/api/ws/notifications?user_id=<user_id>
+# A Socket.IO client will NOT work against this endpoint (different
+# handshake protocol/framing) and will typically receive a 403. Connect
+# with the native browser WebSocket API instead, e.g.:
+#     new WebSocket(`${wsBase}/api/ws/notifications?user_id=${userId}`)
+
+@api_router.websocket("/ws/notifications")
+async def websocket_notifications(websocket: WebSocket, user_id: str = None):
+    """
+    WebSocket endpoint for real-time notifications.
+    Connect with ?user_id=<user_id> to receive personal notifications.
+    """
+    if not user_id:
+        await websocket.close(code=1008)
+        return
+    await manager.connect(user_id, websocket)
+    try:
+        while True:
+            # Keep the connection alive; we don't expect messages from client
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(user_id)
+
+# ============================================================
+# Notification REST Endpoints
+# ============================================================
+
+@api_router.get("/notifications")
+async def get_notifications(user: dict = Depends(get_current_user)):
+    """
+    Returns the last 100 notifications for the current user, newest first.
+    """
+    notifs = await db.notifications.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    # Convert ObjectId to string if present
+    for n in notifs:
+        if "_id" in n:
+            n["_id"] = str(n["_id"])
+    return notifs
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user: dict = Depends(get_current_user)):
+    """
+    Marks a single notification as read.
+    """
+    try:
+        obj_id = ObjectId(notification_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid notification ID")
+    result = await db.notifications.update_one(
+        {"_id": obj_id, "user_id": user["user_id"]},
+        {"$set": {"read": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"ok": True}
+
+@api_router.put("/notifications/read-all")
+async def mark_all_read(user: dict = Depends(get_current_user)):
+    """
+    Marks all notifications as read for the current user.
+    """
+    await db.notifications.update_many(
+        {"user_id": user["user_id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"ok": True}
 
 # ============================================================
 # Streak API Endpoint
