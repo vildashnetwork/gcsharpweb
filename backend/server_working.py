@@ -2157,19 +2157,23 @@ async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)
 STREAK_XP_PER_DAY = 5  # "1 streak = 5 xp"
 
 def parse_daily_commitment(commitment_str: str) -> int:
-    """Return required study seconds, default 3600 (1 hour) if unparsable."""
+    """Return required study seconds, default 3600 if unparsable."""
     if not commitment_str:
         return 3600
     commitment_str = commitment_str.lower().strip()
-    match = re.match(r'(\d+)\s*(hour|minute|min|h|m)', commitment_str)
+    # Match: hour, hours, h, minute, minutes, min, mins, m
+    match = re.match(r'(\d+)\s*(hour|hours|minute|minutes|min|mins|h|m)', commitment_str)
     if not match:
         return 3600
     value = int(match.group(1))
     unit = match.group(2)
     if unit.startswith('hour') or unit == 'h':
         return value * 3600
-    else:
+    else:          # minute, minutes, min, mins, m
         return value * 60
+
+
+
 
 async def get_study_time_for_date(user_id: str, target_date: date) -> int:
     """Returns total seconds studied on that UTC calendar date."""
