@@ -678,7 +678,7 @@ export default function AppLayout({ children }) {
                                 )}
                             </div>
 
-                            <Avatar className="h-10 w-10 border border-border" data-testid="user-avatar">
+                            <Avatar onClick={() => { navigate("/settings") }} className="h-10 w-10 cursor-pointer border border-border" data-testid="user-avatar">
                                 <AvatarImage src={user?.picture} />
                                 <AvatarFallback className="bg-primary text-white text-sm">{initials}</AvatarFallback>
                             </Avatar>
