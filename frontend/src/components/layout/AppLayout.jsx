@@ -1,4 +1,5 @@
-// import { useState } from "react";
+
+// import { useState, useRef, useEffect } from "react";
 // import { useNavigate, useLocation } from "react-router-dom";
 // import { useAuth } from "../../context/AuthContext";
 // import { useTheme } from "../../context/ThemeContext";
@@ -25,8 +26,46 @@
 //     const { user, logout } = useAuth();
 //     const { theme, toggle } = useTheme();
 //     const [mobileOpen, setMobileOpen] = useState(false);
+//     const [searchActive, setSearchActive] = useState(false);
+//     const searchInputRef = useRef(null);
+//     const searchContainerRef = useRef(null);
 
 //     const initials = (user?.name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
+
+//     // Handle click outside to close search on mobile
+//     useEffect(() => {
+//         const handleClickOutside = (e) => {
+//             if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
+//                 setSearchActive(false);
+//             }
+//         };
+//         document.addEventListener("mousedown", handleClickOutside);
+//         return () => document.removeEventListener("mousedown", handleClickOutside);
+//     }, []);
+
+//     // Handle escape key to close search
+//     useEffect(() => {
+//         const handleEsc = (e) => {
+//             if (e.key === "Escape") {
+//                 setSearchActive(false);
+//                 searchInputRef.current?.blur();
+//             }
+//         };
+//         document.addEventListener("keydown", handleEsc);
+//         return () => document.removeEventListener("keydown", handleEsc);
+//     }, []);
+
+//     const handleSearchFocus = () => {
+//         setSearchActive(true);
+//     };
+
+//     const handleSearchClose = () => {
+//         setSearchActive(false);
+//         searchInputRef.current?.blur();
+//         if (searchInputRef.current) {
+//             searchInputRef.current.value = "";
+//         }
+//     };
 
 //     const SidebarContent = () => (
 //         <div className="flex flex-col h-full bg-sidebar">
@@ -102,35 +141,68 @@
 //                 {/* topbar */}
 //                 <header className="sticky top-0 z-40 glass border-b border-border">
 //                     <div className="flex items-center gap-3 px-4 sm:px-6 h-16">
-//                         <button className="lg:hidden" onClick={() => setMobileOpen(true)} data-testid="mobile-menu-btn">
-//                             {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
+//                         {/* Mobile menu button - hidden when search is active */}
+//                         <button
+//                             className={`lg:hidden transition-all duration-300 ${searchActive ? "opacity-0 w-0 overflow-hidden px-0" : "opacity-100"}`}
+//                             onClick={() => setMobileOpen(true)}
+//                             data-testid="mobile-menu-btn"
+//                         >
+//                             <Menu className="h-6 w-6" />
 //                         </button>
-//                         <div className="flex-1 max-w-xl">
+
+//                         {/* Search container */}
+//                         <div
+//                             ref={searchContainerRef}
+//                             className={`flex-1 transition-all duration-300 ${searchActive ? "max-w-full" : "max-w-xl"}`}
+//                         >
 //                             <div className="relative">
-//                                 <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+//                                 <Search className={`absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground transition-colors ${searchActive ? "text-primary" : ""}`} />
+
 //                                 <input
+//                                     ref={searchInputRef}
 //                                     data-testid="global-search"
 //                                     placeholder="Search past papers or ask AI anything…"
-//                                     onKeyDown={(e) => { if (e.key === "Enter") navigate("/ai"); }}
-//                                     className="w-full h-11 pl-11 pr-4 rounded-full bg-secondary/70 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-colors"
+//                                     onFocus={handleSearchFocus}
+//                                     onKeyDown={(e) => {
+//                                         if (e.key === "Enter" && e.target.value.trim()) {
+//                                             navigate(`/search?q=${encodeURIComponent(e.target.value.trim())}`);
+//                                             setSearchActive(false);
+//                                         }
+//                                     }}
+//                                     className={`w-full h-11 pl-11 pr-4 rounded-full bg-secondary/70 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all duration-300 ${searchActive ? "ring-2 ring-primary/50 bg-background" : ""
+//                                         }`}
 //                                 />
+//                                 {/* Close button for mobile search */}
+//                                 {searchActive && (
+//                                     <button
+//                                         onClick={handleSearchClose}
+//                                         className="absolute right-3 top-1/2 -translate-y-1/2 lg:hidden text-muted-foreground hover:text-foreground transition-colors"
+//                                     >
+//                                         <X className="h-5 w-5" />
+//                                     </button>
+//                                 )}
 //                             </div>
 //                         </div>
-//                         <button
-//                             onClick={toggle}
-//                             data-testid="theme-toggle"
-//                             className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors"
-//                         >
-//                             {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
-//                         </button>
-//                         <button className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors relative" data-testid="notifications-btn">
-//                             <Bell className="h-5 w-5" />
-//                             <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive" />
-//                         </button>
-//                         <Avatar className="h-10 w-10 border border-border" data-testid="user-avatar">
-//                             <AvatarImage src={user?.picture} />
-//                             <AvatarFallback className="bg-primary text-white text-sm">{initials}</AvatarFallback>
-//                         </Avatar>
+
+//                         {/* Right side buttons - hidden when search is active on mobile */}
+//                         <div className={`flex items-center gap-2 transition-all duration-300 ${searchActive ? "lg:flex hidden" : "flex"
+//                             }`}>
+//                             <button
+//                                 onClick={toggle}
+//                                 data-testid="theme-toggle"
+//                                 className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors"
+//                             >
+//                                 {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+//                             </button>
+//                             <button className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors relative" data-testid="notifications-btn">
+//                                 <Bell className="h-5 w-5" />
+//                                 <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive" />
+//                             </button>
+//                             <Avatar className="h-10 w-10 border border-border" data-testid="user-avatar">
+//                                 <AvatarImage src={user?.picture} />
+//                                 <AvatarFallback className="bg-primary text-white text-sm">{initials}</AvatarFallback>
+//                             </Avatar>
+//                         </div>
 //                     </div>
 //                 </header>
 
@@ -185,6 +257,17 @@
 
 
 
+
+
+
+
+
+
+
+
+
+
+// components/layout/AppLayout.jsx
 import { useState, useRef, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
@@ -192,9 +275,16 @@ import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
     GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video,
+    Check, XCircle, Info, AlertCircle,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
+import io from "socket.io-client";
+import api from "../../lib/api";
+import { toast } from "sonner";
+
+// WebSocket URL (adjust to your backend)
+const SOCKET_URL = import.meta.env.VITE_API_URL || "https://gcsharpweb.onrender.com";
 
 const NAV = [
     { key: "dashboard", label: "Dashboard", icon: LayoutGrid, path: "/dashboard" },
@@ -206,6 +296,82 @@ const NAV = [
     { key: "settings", label: "Settings", icon: SettingsIcon, path: "/settings" },
 ];
 
+// ----- Notification Dropdown Component -----
+function NotificationDropdown({ notifications, unreadCount, onMarkRead, onMarkAllRead, onClose }) {
+    const getIcon = (type) => {
+        switch (type) {
+            case "streak": return <Flame className="h-4 w-4 text-orange-500" />;
+            case "reminder": return <Bell className="h-4 w-4 text-blue-500" />;
+            case "xp": return <Zap className="h-4 w-4 text-yellow-500" />;
+            default: return <Info className="h-4 w-4 text-muted-foreground" />;
+        }
+    };
+
+    const getTimeAgo = (date) => {
+        const diff = Date.now() - new Date(date).getTime();
+        const mins = Math.floor(diff / 60000);
+        if (mins < 1) return "just now";
+        if (mins < 60) return `${mins}m ago`;
+        const hrs = Math.floor(mins / 60);
+        if (hrs < 24) return `${hrs}h ago`;
+        return `${Math.floor(hrs / 24)}d ago`;
+    };
+
+    return (
+        <div className="absolute right-0 top-12 z-50 w-80 max-h-[400px] overflow-y-auto rounded-xl border border-border bg-card shadow-2xl py-2">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+                <span className="font-medium text-sm">Notifications</span>
+                {unreadCount > 0 && (
+                    <button
+                        onClick={onMarkAllRead}
+                        className="text-xs text-primary hover:underline"
+                    >
+                        Mark all as read
+                    </button>
+                )}
+            </div>
+            {notifications.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No notifications yet
+                </div>
+            ) : (
+                notifications.map((n) => (
+                    <div
+                        key={n._id}
+                        className={`flex items-start gap-3 px-4 py-3 hover:bg-secondary/50 cursor-pointer transition-colors border-b border-border/50 last:border-0 ${!n.read ? "bg-primary/5" : ""}`}
+                        onClick={() => onMarkRead(n._id)}
+                    >
+                        <div className="mt-0.5">{getIcon(n.type)}</div>
+                        <div className="flex-1 min-w-0">
+                            <p className="text-sm text-foreground break-words">{n.message}</p>
+                            {n.link && (
+                                <a
+                                    href={n.link}
+                                    className="text-xs text-primary hover:underline block mt-0.5"
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    View
+                                </a>
+                            )}
+                            <span className="text-[10px] text-muted-foreground block mt-0.5">
+                                {getTimeAgo(n.createdAt)}
+                            </span>
+                        </div>
+                        {!n.read && <div className="h-2 w-2 rounded-full bg-primary shrink-0 mt-1.5" />}
+                    </div>
+                ))
+            )}
+            <button
+                onClick={onClose}
+                className="w-full text-center text-xs text-muted-foreground hover:text-foreground py-2 border-t border-border mt-1"
+            >
+                Close
+            </button>
+        </div>
+    );
+}
+
+// ----- Main AppLayout -----
 export default function AppLayout({ children }) {
     const navigate = useNavigate();
     const location = useLocation();
@@ -216,43 +382,153 @@ export default function AppLayout({ children }) {
     const searchInputRef = useRef(null);
     const searchContainerRef = useRef(null);
 
+    // Notification state
+    const [notifications, setNotifications] = useState([]);
+    const [unreadCount, setUnreadCount] = useState(0);
+    const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+    const [socket, setSocket] = useState(null);
+
     const initials = (user?.name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
 
-    // Handle click outside to close search on mobile
+    // ----- Fetch initial notifications -----
+    const fetchNotifications = async () => {
+        try {
+            const res = await api.get("/notifications");
+            setNotifications(res.data);
+            setUnreadCount(res.data.filter(n => !n.read).length);
+        } catch (err) {
+            console.error("Failed to fetch notifications", err);
+        }
+    };
+
+    // ----- Mark notification as read -----
+    const markAsRead = async (notifId) => {
+        try {
+            await api.put(`/notifications/${notifId}/read`);
+            setNotifications(prev =>
+                prev.map(n => n._id === notifId ? { ...n, read: true } : n)
+            );
+            setUnreadCount(prev => Math.max(0, prev - 1));
+        } catch (err) {
+            console.error("Failed to mark as read", err);
+        }
+    };
+
+    const markAllAsRead = async () => {
+        try {
+            await api.put("/notifications/read-all");
+            setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+            setUnreadCount(0);
+        } catch (err) {
+            console.error("Failed to mark all as read", err);
+        }
+    };
+
+    // ----- WebSocket connection -----
+    useEffect(() => {
+        if (!user?.user_id) return;
+
+        // Connect to WebSocket with user ID
+        const newSocket = io(SOCKET_URL, {
+            path: "/ws/notifications",
+            query: { user_id: user.user_id },
+            transports: ["websocket"],
+        });
+
+        newSocket.on("connect", () => {
+            console.log("Notification WebSocket connected");
+        });
+
+        newSocket.on("notification", (data) => {
+            // Add new notification to the list
+            setNotifications(prev => [data, ...prev]);
+            setUnreadCount(prev => prev + 1);
+
+            // Show browser notification if supported
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification("GCSHARP", {
+                    body: data.message,
+                    icon: "/logo192.png",
+                });
+            }
+
+            // Also show toast
+            toast.info(data.message, { duration: 5000 });
+        });
+
+        newSocket.on("disconnect", () => {
+            console.log("Notification WebSocket disconnected");
+        });
+
+        setSocket(newSocket);
+
+        // Cleanup
+        return () => {
+            newSocket.disconnect();
+        };
+    }, [user]);
+
+    // Fetch initial notifications when user logs in
+    useEffect(() => {
+        if (user?.user_id) {
+            fetchNotifications();
+        }
+    }, [user]);
+
+    // ----- Request notification permission -----
+    const requestNotificationPermission = () => {
+        if ("Notification" in window && Notification.permission === "default") {
+            Notification.requestPermission();
+        }
+    };
+
+    // ----- Handle click outside to close search and dropdown -----
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (searchContainerRef.current && !searchContainerRef.current.contains(e.target)) {
                 setSearchActive(false);
             }
+            // Close dropdown when clicking outside
+            if (isDropdownOpen) {
+                const dropdown = document.getElementById("notification-dropdown");
+                if (dropdown && !dropdown.contains(e.target)) {
+                    setIsDropdownOpen(false);
+                }
+            }
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => document.removeEventListener("mousedown", handleClickOutside);
-    }, []);
+    }, [isDropdownOpen]);
 
-    // Handle escape key to close search
+    // ----- Handle escape key -----
     useEffect(() => {
         const handleEsc = (e) => {
             if (e.key === "Escape") {
                 setSearchActive(false);
                 searchInputRef.current?.blur();
+                setIsDropdownOpen(false);
             }
         };
         document.addEventListener("keydown", handleEsc);
         return () => document.removeEventListener("keydown", handleEsc);
     }, []);
 
-    const handleSearchFocus = () => {
-        setSearchActive(true);
-    };
-
+    const handleSearchFocus = () => setSearchActive(true);
     const handleSearchClose = () => {
         setSearchActive(false);
         searchInputRef.current?.blur();
-        if (searchInputRef.current) {
-            searchInputRef.current.value = "";
-        }
+        if (searchInputRef.current) searchInputRef.current.value = "";
     };
 
+    // Toggle dropdown
+    const toggleDropdown = () => {
+        setIsDropdownOpen(prev => !prev);
+        // Request permission if not yet
+        requestNotificationPermission();
+        // Optionally mark notifications as read on open? We'll let user click individually.
+    };
+
+    // ----- Sidebar content (unchanged) -----
     const SidebarContent = () => (
         <div className="flex flex-col h-full bg-sidebar">
             <div className="p-6 flex items-center gap-3">
@@ -264,7 +540,6 @@ export default function AppLayout({ children }) {
                     <p className="text-xs text-muted-foreground mt-0.5">Sharpening Potential</p>
                 </div>
             </div>
-
             <nav className="flex-1 px-4 space-y-1">
                 {NAV.map((item) => {
                     const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
@@ -281,7 +556,6 @@ export default function AppLayout({ children }) {
                     );
                 })}
             </nav>
-
             <div className="p-4 space-y-3">
                 <Button
                     data-testid="upload-content-btn"
@@ -327,7 +601,7 @@ export default function AppLayout({ children }) {
                 {/* topbar */}
                 <header className="sticky top-0 z-40 glass border-b border-border">
                     <div className="flex items-center gap-3 px-4 sm:px-6 h-16">
-                        {/* Mobile menu button - hidden when search is active */}
+                        {/* Mobile menu button */}
                         <button
                             className={`lg:hidden transition-all duration-300 ${searchActive ? "opacity-0 w-0 overflow-hidden px-0" : "opacity-100"}`}
                             onClick={() => setMobileOpen(true)}
@@ -336,14 +610,13 @@ export default function AppLayout({ children }) {
                             <Menu className="h-6 w-6" />
                         </button>
 
-                        {/* Search container */}
+                        {/* Search */}
                         <div
                             ref={searchContainerRef}
                             className={`flex-1 transition-all duration-300 ${searchActive ? "max-w-full" : "max-w-xl"}`}
                         >
                             <div className="relative">
                                 <Search className={`absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground transition-colors ${searchActive ? "text-primary" : ""}`} />
-
                                 <input
                                     ref={searchInputRef}
                                     data-testid="global-search"
@@ -355,10 +628,8 @@ export default function AppLayout({ children }) {
                                             setSearchActive(false);
                                         }
                                     }}
-                                    className={`w-full h-11 pl-11 pr-4 rounded-full bg-secondary/70 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all duration-300 ${searchActive ? "ring-2 ring-primary/50 bg-background" : ""
-                                        }`}
+                                    className={`w-full h-11 pl-11 pr-4 rounded-full bg-secondary/70 border border-border text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all duration-300 ${searchActive ? "ring-2 ring-primary/50 bg-background" : ""}`}
                                 />
-                                {/* Close button for mobile search */}
                                 {searchActive && (
                                     <button
                                         onClick={handleSearchClose}
@@ -370,9 +641,8 @@ export default function AppLayout({ children }) {
                             </div>
                         </div>
 
-                        {/* Right side buttons - hidden when search is active on mobile */}
-                        <div className={`flex items-center gap-2 transition-all duration-300 ${searchActive ? "lg:flex hidden" : "flex"
-                            }`}>
+                        {/* Right side buttons */}
+                        <div className={`flex items-center gap-2 transition-all duration-300 ${searchActive ? "lg:flex hidden" : "flex"}`}>
                             <button
                                 onClick={toggle}
                                 data-testid="theme-toggle"
@@ -380,10 +650,34 @@ export default function AppLayout({ children }) {
                             >
                                 {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
                             </button>
-                            <button className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors relative" data-testid="notifications-btn">
-                                <Bell className="h-5 w-5" />
-                                <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive" />
-                            </button>
+
+                            {/* Notification Bell with dropdown */}
+                            <div className="relative">
+                                <button
+                                    onClick={toggleDropdown}
+                                    className="h-10 w-10 rounded-lg border border-border flex items-center justify-center hover:bg-secondary transition-colors relative"
+                                    data-testid="notifications-btn"
+                                >
+                                    <Bell className="h-5 w-5" />
+                                    {unreadCount > 0 && (
+                                        <span className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-destructive text-white text-[10px] flex items-center justify-center font-bold">
+                                            {unreadCount > 9 ? "9+" : unreadCount}
+                                        </span>
+                                    )}
+                                </button>
+                                {isDropdownOpen && (
+                                    <div id="notification-dropdown" className="absolute right-0 top-12">
+                                        <NotificationDropdown
+                                            notifications={notifications}
+                                            unreadCount={unreadCount}
+                                            onMarkRead={markAsRead}
+                                            onMarkAllRead={markAllAsRead}
+                                            onClose={() => setIsDropdownOpen(false)}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
                             <Avatar className="h-10 w-10 border border-border" data-testid="user-avatar">
                                 <AvatarImage src={user?.picture} />
                                 <AvatarFallback className="bg-primary text-white text-sm">{initials}</AvatarFallback>
