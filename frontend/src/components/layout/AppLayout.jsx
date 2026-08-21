@@ -275,7 +275,7 @@ import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
     GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video,
-    Check, XCircle, Info, AlertCircle,
+    Check, XCircle, Info, AlertCircle,Flame 
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
