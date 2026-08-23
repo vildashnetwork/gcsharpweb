@@ -147,7 +147,7 @@ export default function Settings() {
     const fileInputRef = useRef(null);
 
     const [form, setForm] = useState({
-        name: user?.full_name || "",
+        name: user?.name || "",
         bio: user?.bio || "",
         institution: user?.institution || "",
         exam_level: user?.exam_level || "",
@@ -160,7 +160,7 @@ export default function Settings() {
 
     const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
-    const initials = (form.full_name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
+    const initials = (form.name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
 
     // Cloudinary config (use your cloud name and unsigned preset)
     const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME || "qsmemy5r";
@@ -223,7 +223,7 @@ export default function Settings() {
         setSaving(true);
         try {
             const payload = {
-                name: form.full_name,
+                name: form.name,
                 bio: form.bio,
                 institution: form.institution,
                 exam_level: form.exam_level,
@@ -277,7 +277,7 @@ export default function Settings() {
                         />
                     </div>
                     <div>
-                        <p className="font-display font-semibold text-lg">{form.full_name}</p>
+                        <p className="font-display font-semibold text-lg">{form.name}</p>
                         <p className="text-sm text-muted-foreground">{user?.email}</p>
                         <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-accent text-primary capitalize">{user?.role}</span>
                     </div>
@@ -290,7 +290,7 @@ export default function Settings() {
                         <Input
                             id="name"
                             data-testid="settings-name"
-                            value={form.full_name}
+                            value={form.name}
                             onChange={(e) => set("name", e.target.value)}
                             placeholder="Your full name"
                         />
