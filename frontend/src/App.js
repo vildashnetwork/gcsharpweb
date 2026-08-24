@@ -191,7 +191,7 @@ function LoginGate() {
                 pages (like VideoLibrary) still override title/description
                 for their own content; this is just the site-wide default. */}
             <Seo
-                title="AI-Powered GCE, HND & Concours Past Papers"
+                title="Login In To Access  A different Worl Of learning"
                 description="Study smarter for GCE O Level, GCE A Level, HND and Concours exams with GCSHARP — AI-marked past papers, narrated video solutions, and a personal AI tutor built for Cameroonian students."
                 path="/"
             />
