@@ -187,7 +187,7 @@ function LoginGate() {
         <>
             {/* Real, indexable homepage tags */}
             <Seo
-                title="Study smarter for GCE O Level, GCE A Level, HND and Concours Access a Different World of Learning"
+                title="GCSHARP · AI-Powered GCE, HND & Concours Past Papers"
                 description="Study smarter for GCE O Level, GCE A Level, HND and Concours exams with GCSHARP — AI-marked past papers, narrated video solutions, and a personal AI tutor built for Cameroonian students."
                 path="/"
             />
