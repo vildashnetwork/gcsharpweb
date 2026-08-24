@@ -1,0 +1,18 @@
+User-agent: *
+Allow: /
+Allow: /videos
+Allow: /videos/*
+
+# Auth-gated app routes — crawling these just serves bots a login
+# redirect, wastes crawl budget, and dilutes sitelink quality.
+Disallow: /onboarding
+Disallow: /phone-signin
+Disallow: /search
+Disallow: /dashboard
+Disallow: /study
+Disallow: /ai
+Disallow: /analytics
+Disallow: /teacher
+Disallow: /settings
+
+Sitemap: https://gcsharp.com/sitemap.xml

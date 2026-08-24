@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://gcsharp.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://gcsharp.com/videos</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!--
+    Individual /videos/:videoId pages should be added here too, since
+    each one is a distinct piece of public content Google can index.
+    This file is static, so those entries need to be generated from
+    your backend's video list rather than hand-maintained — e.g. a
+    small build/deploy script that hits your videos API and writes:
+
+    <url>
+      <loc>https://gcsharp.com/videos/VIDEO_ID</loc>
+      <lastmod>2026-08-01</lastmod>
+      <changefreq>monthly</changefreq>
+      <priority>0.6</priority>
+    </url>
+
+    for every published video. Submit the resulting sitemap in
+    Google Search Console (Sitemaps → Add a new sitemap).
+  -->
+</urlset>
