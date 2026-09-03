@@ -540,8 +540,14 @@ def _frontend_redirect(origin: str) -> str:
     candidate = f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
     if candidate in FRONTEND_URLS:
         return candidate
+    if candidate == 'https://www.gcsharp.com' and 'https://gcsharp.com' in FRONTEND_URLS:
+        return candidate
+    if candidate == 'https://gcsharp.com' and 'https://www.gcsharp.com' in FRONTEND_URLS:
+        return candidate
     if 'https://gcsharp.com' in FRONTEND_URLS:
         return 'https://gcsharp.com'
+    if 'https://www.gcsharp.com' in FRONTEND_URLS:
+        return 'https://www.gcsharp.com'
     return next(iter(FRONTEND_URLS), 'https://gcsharp.com')
 
 
@@ -640,6 +646,7 @@ async def google_callback(request: Request, code: Optional[str] = None,
                           state: Optional[str] = None, error: Optional[str] = None):
     redirect_target = _frontend_target(request.cookies.get('google_oauth_redirect', ''))
     if error or not code or not state or state != request.cookies.get('google_oauth_state'):
+    logger.warning('Google OAuth callback rejected before token exchange: error=%s state_valid=%s', error, bool(state and state == request.cookies.get('google_oauth_state')))
         return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
 
     async with httpx.AsyncClient() as hc:
@@ -654,6 +661,7 @@ async def google_callback(request: Request, code: Optional[str] = None,
             },
         )
         if token_response.status_code != 200:
+            logger.error('Google OAuth token exchange failed: status=%s response=%s', token_response.status_code, token_response.text[:500])
             return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
         access_token = token_response.json().get('access_token')
         profile_response = await hc.get(
@@ -662,6 +670,7 @@ async def google_callback(request: Request, code: Optional[str] = None,
         )
 
     if profile_response.status_code != 200:
+        logger.error('Google OAuth userinfo request failed: status=%s response=%s', profile_response.status_code, profile_response.text[:500])
         return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
 
     response = RedirectResponse(redirect_target, status_code=302)
