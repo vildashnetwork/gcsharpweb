@@ -4,6 +4,8 @@ import json
 import uuid
 import base64
 import logging
+import secrets
+from urllib.parse import urlencode
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -11,7 +13,7 @@ from typing import List, Optional
 import httpx
 from pypdf import PdfReader
 from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, Depends
-from fastapi.responses import StreamingResponse, Response as FastResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, Response as FastResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -29,6 +31,14 @@ db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 AI_MODEL = ("openai", "gpt-5.4")
+GOOGLE_CALLBACK = os.environ.get("CALLBACK", "")
+GOOGLE_CLIENT_ID = os.environ.get("CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
+FRONTEND_URLS = {
+    origin.rstrip("/")
+    for origin in os.environ.get("FRONTEND_URLS", "https://gcsharp.com,http://localhost:3000").split(",")
+    if origin.strip()
+}
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -114,6 +124,112 @@ async def get_current_user(request: Request):
     return user
 
 # ----------------------------- Auth routes -----------------------------
+
+def _frontend_redirect(origin: str) -> str:
+    origin = origin.rstrip("/")
+    return origin if origin in FRONTEND_URLS else next(iter(FRONTEND_URLS))
+
+async def _finish_google_login(data: dict, response: Response):
+    email = data.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="Google did not return an email address")
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    if not user:
+        user = {
+            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "email": email,
+            "name": data.get("name", ""),
+            "picture": data.get("picture", ""),
+            "role": None,
+            "onboarded": False,
+            "bio": "",
+            "institution": "",
+            "exam_level": "",
+            "study_year": None,
+            "subjects": [],
+            "goals": [],
+            "daily_commitment": "",
+            "proficiency": "",
+            "learning_style": "",
+            "specialization": "",
+            "xp": 0,
+            "level": 1,
+            "streak": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(dict(user))
+
+    session_token = f"tok_{uuid.uuid4().hex}"
+    await db.user_sessions.insert_one({
+        "user_id": user["user_id"],
+        "session_token": session_token,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response.set_cookie(
+        key="session_token", value=session_token, httponly=True,
+        secure=GOOGLE_CALLBACK.startswith("https://"), samesite="lax", path="/",
+        max_age=7 * 24 * 60 * 60,
+    )
+    return user
+
+@api_router.get("/auth/google/login")
+async def google_login(response: Response, redirect: str = "https://gcsharp.com"):
+    if not GOOGLE_CALLBACK or not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured")
+    state = f"{secrets.token_urlsafe(24)}:{_frontend_redirect(redirect)}"
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_CALLBACK,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    response = RedirectResponse(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}",
+        status_code=302,
+    )
+    response.set_cookie(
+        key="google_oauth_state", value=state, httponly=True,
+        secure=GOOGLE_CALLBACK.startswith("https://"), samesite="lax", path="/",
+        max_age=600,
+    )
+    return response
+
+@app.get("/auth/callback")
+async def google_callback(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error or not code or not state:
+        return RedirectResponse("https://gcsharp.com/?auth_error=google")
+    redirect_origin = state.split(":", 1)[1] if ":" in state else ""
+    redirect_origin = _frontend_redirect(redirect_origin)
+    async with httpx.AsyncClient() as hc:
+        token_response = await hc.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "redirect_uri": GOOGLE_CALLBACK,
+                "grant_type": "authorization_code",
+            },
+        )
+        if token_response.status_code != 200:
+            return RedirectResponse(f"{redirect_origin}/?auth_error=google")
+        access_token = token_response.json().get("access_token")
+        profile_response = await hc.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if profile_response.status_code != 200:
+        return RedirectResponse(f"{redirect_origin}/?auth_error=google")
+
+    callback_response = RedirectResponse(f"{redirect_origin}/dashboard", status_code=302)
+    await _finish_google_login(profile_response.json(), callback_response)
+    callback_response.delete_cookie("google_oauth_state", path="/")
+    return callback_response
 
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):

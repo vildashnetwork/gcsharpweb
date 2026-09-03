@@ -289,8 +289,8 @@ export function AuthProvider({ children }) {
     // Login with Google
     const loginWithGoogle = async () => {
         try {
-            const redirectUrl = window.location.origin + "/dashboard";
-            window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+            const backendUrl = process.env.REACT_APP_BACKEND_URL || "https://gcsharpweb.onrender.com";
+            window.location.href = `${backendUrl}/api/auth/google/login?redirect=${encodeURIComponent(window.location.origin)}`;
         } catch (error) {
             console.error("Google login error:", error);
             throw error;

@@ -3,6 +3,7 @@
 # IDE and editors
 .idea/
 .vscode/
+./backend/.env
 
 # Dependencies
 node_modules/

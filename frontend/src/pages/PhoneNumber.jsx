@@ -1,3 +1,7 @@
+
+
+
+
 // import React, { useState, useRef, useEffect } from "react";
 // import { useNavigate, useSearchParams } from "react-router-dom";
 // import {
@@ -1036,8 +1040,7 @@ export default function SignIn() {
             if (loginWithGoogle) {
                 await loginWithGoogle();
             } else {
-                const redirectUrl = window.location.origin + "/dashboard";
-                window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+                window.location.href = "/";
             }
         } catch (error) {
             console.error("Google login error:", error);

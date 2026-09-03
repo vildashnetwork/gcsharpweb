@@ -9,7 +9,6 @@
 //     const handleGoogleLogin = () => {
 //         // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 //         const redirectUrl = window.location.origin + "/dashboard";
-//         window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
 //     };
 
 //     const features = [
@@ -238,7 +237,7 @@ const HERO_IMAGES = [
 export default function Login() {
     const { theme, toggle } = useTheme();
     const [heroIndex, setHeroIndex] = useState(0);
-    const { user } = useAuth();
+    const { user, loginWithGoogle } = useAuth();
     useEffect(() => {
         if (user) {
             window.location.href = "/dashboard";
@@ -253,11 +252,7 @@ export default function Login() {
         return () => clearInterval(id);
     }, []);
 
-    const handleGoogleLogin = () => {
-        // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-        const redirectUrl = window.location.origin + "/dashboard";
-        window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-    };
+    const handleGoogleLogin = loginWithGoogle;
 
     const features = [
         { icon: BookOpen, title: "AI Past Questions", desc: "GCE O/A Level, HND & Concours papers, with instant AI feedback on every answer." },
