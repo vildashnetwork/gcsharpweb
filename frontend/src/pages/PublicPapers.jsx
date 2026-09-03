@@ -19,6 +19,47 @@ function paperDescription(paper) {
     return paper.description || `${paper.level} ${paper.subject} past paper from ${paper.year}, Paper ${paper.paper_number}.`;
 }
 
+function searchText(paper) {
+    return [paper.title, paper.subject, paper.level, paper.year, paper.paper_number, paper.description]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]+/g, " ");
+}
+
+function editDistance(left, right) {
+    const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+    for (let row = 1; row <= left.length; row += 1) {
+        const current = [row];
+        for (let column = 1; column <= right.length; column += 1) {
+            current[column] = left[row - 1] === right[column - 1]
+                ? previous[column - 1]
+                : 1 + Math.min(previous[column - 1], previous[column], current[column - 1]);
+        }
+        for (let column = 0; column <= right.length; column += 1) previous[column] = current[column];
+    }
+    return previous[right.length];
+}
+
+function rankPapers(papers, query) {
+    const terms = searchText({ title: query }).split(" ").filter(Boolean);
+    return papers
+        .map((paper) => {
+            const words = searchText(paper).split(" ").filter(Boolean);
+            const score = terms.reduce((total, term) => {
+                const exact = words.some((word) => word.includes(term));
+                const close = words.some((word) => editDistance(term, word) <= Math.max(1, Math.floor(term.length / 4)));
+                return total + (exact ? 3 : close ? 1 : 0);
+            }, 0);
+            return { paper, score };
+        })
+        .filter(({ score }) => score > 0)
+        .sort((left, right) => right.score - left.score)
+        .map(({ paper }) => paper);
+}
+
 function PaperCard({ paper }) {
     return (
         <Link
@@ -47,6 +88,7 @@ export default function PublicPapers() {
     const { paperSlug: paperSlugParam } = useParams();
     const [papers, setPapers] = useState([]);
     const [paper, setPaper] = useState(null);
+    const [searchResults, setSearchResults] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
 
@@ -54,6 +96,8 @@ export default function PublicPapers() {
         let cancelled = false;
         setLoading(true);
         setError("");
+        setPaper(null);
+        setSearchResults([]);
         const request = paperSlugParam
             ? api.get(`/public/papers/slug/${encodeURIComponent(paperSlugParam)}`)
             : api.get("/public/papers");
@@ -78,7 +122,7 @@ export default function PublicPapers() {
                             (item.slug || paperSlug(item.title)) === paperSlugParam
                         );
                         if (match) setPaper(match);
-                        else setError("This paper could not be found.");
+                        else setSearchResults(rankPapers(data || [], paperSlugParam.replace(/-/g, " ")));
                     })
                     .catch(() => {
                         if (!cancelled) setError("This paper could not be found.");
@@ -105,8 +149,19 @@ export default function PublicPapers() {
                     </Link>
                     {loading ? (
                         <Loader2 className="h-7 w-7 animate-spin text-primary" />
-                    ) : error || !paper ? (
-                        <p className="text-muted-foreground">{error || "This paper could not be found."}</p>
+                    ) : error ? (
+                        <p className="text-muted-foreground">{error}</p>
+                    ) : !paper ? (
+                        <>
+                            <h1 className="font-display text-3xl font-bold sm:text-5xl">Search results for “{paperSlugParam.replace(/-/g, " ")}”</h1>
+                            {searchResults.length === 0 ? (
+                                <p className="mt-6 text-muted-foreground">No similar papers were found.</p>
+                            ) : (
+                                <div className="mt-10 grid gap-5 sm:grid-cols-2">
+                                    {searchResults.map((item) => <PaperCard key={item.paper_id} paper={item} />)}
+                                </div>
+                            )}
+                        </>
                     ) : (
                         <article>
                             <p className="mb-3 text-sm font-semibold uppercase tracking-wide text-primary">GCSHARP past paper</p>
