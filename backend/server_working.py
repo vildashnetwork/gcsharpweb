@@ -59,7 +59,7 @@ GOOGLE_CLIENT_SECRET = os.environ.get('CLIENT_SECRET', '')
 FRONTEND_URLS = {
     origin.strip().rstrip('/')
     for origin in os.environ.get(
-        'FRONTEND_URLS', 'https://gcsharp.com,http://localhost:3000'
+        'FRONTEND_URLS', 'https://gcsharp.com'
     ).split(',')
     if origin.strip()
 }
@@ -540,7 +540,9 @@ def _frontend_redirect(origin: str) -> str:
     candidate = f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
     if candidate in FRONTEND_URLS:
         return candidate
-    return next(iter(FRONTEND_URLS))
+    if 'https://gcsharp.com' in FRONTEND_URLS:
+        return 'https://gcsharp.com'
+    return next(iter(FRONTEND_URLS), 'https://gcsharp.com')
 
 
 def _frontend_target(url: str) -> str:

@@ -64,8 +64,25 @@ export default function PublicPapers() {
                 if (paperSlugParam) setPaper(data);
                 else setPapers(data || []);
             })
-            .catch(() => {
-                if (!cancelled) setError("This paper could not be found.");
+            .catch((requestError) => {
+                if (!paperSlugParam || requestError.response?.status !== 404) {
+                    if (!cancelled) setError("This paper could not be found.");
+                    return;
+                }
+
+                // Keep title URLs compatible while older backend deployments roll out.
+                api.get("/public/papers")
+                    .then(({ data }) => {
+                        if (cancelled) return;
+                        const match = (data || []).find((item) =>
+                            (item.slug || paperSlug(item.title)) === paperSlugParam
+                        );
+                        if (match) setPaper(match);
+                        else setError("This paper could not be found.");
+                    })
+                    .catch(() => {
+                        if (!cancelled) setError("This paper could not be found.");
+                    });
             })
             .finally(() => {
                 if (!cancelled) setLoading(false);
