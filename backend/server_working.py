@@ -60,12 +60,9 @@ CORS_ORIGINS = [
 ]
 APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
 configured_google_callback = os.environ.get('CALLBACK', '')
-legacy_google_hosts = {'auth.gcsharp.com'}
-configured_callback_host = urlparse(configured_google_callback).netloc.lower()
 GOOGLE_CALLBACK = (
     f'{APP_URL.rstrip("/")}/auth/callback'
-    if not configured_google_callback or configured_callback_host in legacy_google_hosts
-    else configured_google_callback
+    if not configured_google_callback else configured_google_callback
 )
 GOOGLE_CLIENT_ID = os.environ.get('CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('CLIENT_SECRET', '')

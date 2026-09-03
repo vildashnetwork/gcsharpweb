@@ -80,21 +80,28 @@ let webpackConfig = {
     },
   },
   webpack: {
+    plugins: {
+      add: [
+        new (require("webpack")).DefinePlugin({
+          "process.env.APP_BACKEND_URL": JSON.stringify(process.env.APP_BACKEND_URL),
+        }),
+      ],
+    },
     alias: {
       '@': path.resolve(__dirname, 'src'),
     },
     configure: (webpackConfig) => {
 
       // Add ignored patterns to reduce watched directories
-        webpackConfig.watchOptions = {
-          ...webpackConfig.watchOptions,
-          ignored: [
-            '**/node_modules/**',
-            '**/.git/**',
-            '**/build/**',
-            '**/dist/**',
-            '**/coverage/**',
-            '**/public/**',
+      webpackConfig.watchOptions = {
+        ...webpackConfig.watchOptions,
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/build/**',
+          '**/dist/**',
+          '**/coverage/**',
+          '**/public/**',
         ],
       };
 

@@ -303,7 +303,7 @@ export function AuthProvider({ children }) {
     // Login with Google
     const loginWithGoogle = async () => {
         try {
-            const backendUrl = process.env.REACT_APP_BACKEND_URL || "https://gcsharpweb.onrender.com";
+            const backendUrl = process.env.APP_BACKEND_URL || "https://auth.gcsharp.com";
             const returnUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`;
             window.location.href = `${backendUrl}/api/auth/google/login?redirect=${encodeURIComponent(returnUrl)}`;
         } catch (error) {
