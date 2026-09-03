@@ -50,16 +50,22 @@ MONGO_URL = os.environ.get('MONGO_URL')
 if not MONGO_URL:
     raise RuntimeError("MONGO_URL environment variable is not set")
 DB_NAME = os.environ.get('DB_NAME', 'gcsmart')
-CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
 APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
+CORS_ORIGINS = [
+    origin.strip().rstrip('/')
+    for origin in os.environ.get(
+        'CORS_ORIGINS', 'https://gcsharp.com,https://www.gcsharp.com'
+    ).split(',')
+    if origin.strip() and origin.strip() != '*'
+]
 APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
-GOOGLE_CALLBACK = os.environ.get('CALLBACK', '')
+GOOGLE_CALLBACK = os.environ.get('CALLBACK', f'{APP_URL}/auth/callback')
 GOOGLE_CLIENT_ID = os.environ.get('CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('CLIENT_SECRET', '')
 FRONTEND_URLS = {
     origin.strip().rstrip('/')
     for origin in os.environ.get(
-        'FRONTEND_URLS', 'https://gcsharp.com'
+        'FRONTEND_URLS', 'https://gcsharp.com,https://www.gcsharp.com'
     ).split(',')
     if origin.strip()
 }
