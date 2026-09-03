@@ -71,7 +71,7 @@ export default function PublicPapers() {
                 }
 
                 // Keep title URLs compatible while older backend deployments roll out.
-                api.get("/public/papers")
+                return api.get("/public/papers")
                     .then(({ data }) => {
                         if (cancelled) return;
                         const match = (data || []).find((item) =>
@@ -105,8 +105,8 @@ export default function PublicPapers() {
                     </Link>
                     {loading ? (
                         <Loader2 className="h-7 w-7 animate-spin text-primary" />
-                    ) : error ? (
-                        <p className="text-muted-foreground">{error}</p>
+                    ) : error || !paper ? (
+                        <p className="text-muted-foreground">{error || "This paper could not be found."}</p>
                     ) : (
                         <article>
                             <p className="mb-3 text-sm font-semibold uppercase tracking-wide text-primary">GCSHARP past paper</p>
