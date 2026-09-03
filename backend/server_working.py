@@ -9,7 +9,7 @@ import logging
 import asyncio
 import secrets
 import requests
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Dict
@@ -535,10 +535,21 @@ async def get_current_user(request: Request):
 # ============================================================
 
 def _frontend_redirect(origin: str) -> str:
-    origin = origin.rstrip('/')
-    if origin in FRONTEND_URLS:
-        return origin
+    parsed = urlparse(origin)
+    candidate = f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+    if candidate in FRONTEND_URLS:
+        return candidate
     return next(iter(FRONTEND_URLS))
+
+
+def _frontend_target(url: str) -> str:
+    parsed = urlparse(url)
+    origin = _frontend_redirect(url)
+    path = parsed.path or '/'
+    if not path.startswith('/') or path.startswith('//'):
+        path = '/'
+    query = f'?{parsed.query}' if parsed.query else ''
+    return f'{origin}{path}{query}'
 
 
 async def _create_google_session(profile: dict, response: Response):
@@ -594,7 +605,7 @@ async def google_login(redirect: str = 'https://gcsharp.com'):
         raise HTTPException(status_code=500, detail='Google OAuth is not configured')
 
     state = secrets.token_urlsafe(32)
-    redirect_origin = _frontend_redirect(redirect)
+    redirect_target = _frontend_target(redirect)
     params = {
         'client_id': GOOGLE_CLIENT_ID,
         'redirect_uri': GOOGLE_CALLBACK,
@@ -614,7 +625,7 @@ async def google_login(redirect: str = 'https://gcsharp.com'):
         max_age=600,
     )
     response.set_cookie(
-        key='google_oauth_redirect', value=redirect_origin, httponly=True,
+        key='google_oauth_redirect', value=redirect_target, httponly=True,
         secure=GOOGLE_CALLBACK.startswith('https://'), samesite='lax', path='/',
         max_age=600,
     )
@@ -624,9 +635,9 @@ async def google_login(redirect: str = 'https://gcsharp.com'):
 @app.get('/auth/callback')
 async def google_callback(request: Request, code: Optional[str] = None,
                           state: Optional[str] = None, error: Optional[str] = None):
-    redirect_origin = _frontend_redirect(request.cookies.get('google_oauth_redirect', ''))
+    redirect_target = _frontend_target(request.cookies.get('google_oauth_redirect', ''))
     if error or not code or not state or state != request.cookies.get('google_oauth_state'):
-        return RedirectResponse(f'{redirect_origin}/?auth_error=google')
+        return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
 
     async with httpx.AsyncClient() as hc:
         token_response = await hc.post(
@@ -640,7 +651,7 @@ async def google_callback(request: Request, code: Optional[str] = None,
             },
         )
         if token_response.status_code != 200:
-            return RedirectResponse(f'{redirect_origin}/?auth_error=google')
+            return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
         access_token = token_response.json().get('access_token')
         profile_response = await hc.get(
             'https://www.googleapis.com/oauth2/v3/userinfo',
@@ -648,9 +659,9 @@ async def google_callback(request: Request, code: Optional[str] = None,
         )
 
     if profile_response.status_code != 200:
-        return RedirectResponse(f'{redirect_origin}/?auth_error=google')
+        return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
 
-    response = RedirectResponse(f'{redirect_origin}/dashboard', status_code=302)
+    response = RedirectResponse(redirect_target, status_code=302)
     await _create_google_session(profile_response.json(), response)
     response.delete_cookie('google_oauth_state', path='/')
     response.delete_cookie('google_oauth_redirect', path='/')
@@ -2078,6 +2089,44 @@ async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retr
 # ============================================================
 # Papers Module
 # ============================================================
+
+def _public_paper(paper: dict) -> dict:
+    return {
+        "paper_id": paper.get("paper_id"),
+        "title": paper.get("title", "Untitled paper"),
+        "subject": paper.get("subject", ""),
+        "level": paper.get("level", ""),
+        "year": paper.get("year"),
+        "paper_number": paper.get("paper_number"),
+        "description": paper.get("description", ""),
+        "created_at": paper.get("created_at"),
+    }
+
+def _paper_slug(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (title or "untitled-paper").lower()).strip("-")
+
+@api_router.get("/public/papers")
+async def list_public_papers(q: Optional[str] = None):
+    query = {}
+    if q:
+        query["title"] = {"$regex": re.escape(q), "$options": "i"}
+    papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1), ("title", 1)]).to_list(1000)
+    return [{**_public_paper(paper), "slug": _paper_slug(paper.get("title", ""))} for paper in papers]
+
+@api_router.get("/public/papers/slug/{slug}")
+async def get_public_paper_by_slug(slug: str):
+    papers = await db.papers.find({}, {"_id": 0}).to_list(1000)
+    for paper in papers:
+        if _paper_slug(paper.get("title", "")) == slug:
+            return {**_public_paper(paper), "slug": slug}
+    raise HTTPException(status_code=404, detail="Paper not found")
+
+@api_router.get("/public/papers/{paper_id}")
+async def get_public_paper(paper_id: str):
+    paper = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return {**_public_paper(paper), "slug": _paper_slug(paper.get("title", ""))}
 
 @api_router.get("/papers/filters")
 async def paper_filters(user: dict = Depends(get_current_user)):

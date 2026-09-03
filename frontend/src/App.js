@@ -137,6 +137,7 @@ import Analytics from "@/pages/Analytics";
 import TeacherPortal from "@/pages/TeacherPortal";
 import Settings from "@/pages/Settings";
 import PhoneSignIn from "@/pages/PhoneNumber";
+import PublicPapers from "@/pages/PublicPapers";
 import VideoLibrary from "./pages/VideoLibrary";
 import SearchPage from "./pages/SearchPage";
 import { Loader2 } from "lucide-react";
@@ -167,8 +168,7 @@ function Protected({ children, title }) {
     );
 }
 
-// Public-URL flow routes (onboarding, phone sign-in) — reachable without
-// auth, but not content pages, so noindex too.
+// Public flow routes that should be discoverable by search engines.
 function NoIndex({ title, children }) {
     return (
         <>
@@ -206,11 +206,19 @@ function AppRouter() {
             <Route
                 path="/phone-signin"
                 element={
-                    <NoIndex title="Sign In with Your Phone Number">
+                    <>
+                        <Seo
+                            title="Sign In with Google, Email or Phone"
+                            description="Sign in to GCSHARP with Google, email or phone number to access past papers, AI tutoring and study tools."
+                            path="/phone-signin"
+                        />
                         <PhoneSignIn />
-                    </NoIndex>
+                    </>
                 }
             />
+
+            <Route path="/papers" element={<PublicPapers />} />
+            <Route path="/papers/:paperSlug" element={<PublicPapers />} />
 
             <Route
                 path="/onboarding"

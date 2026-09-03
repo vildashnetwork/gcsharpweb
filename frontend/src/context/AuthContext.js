@@ -290,7 +290,8 @@ export function AuthProvider({ children }) {
     const loginWithGoogle = async () => {
         try {
             const backendUrl = process.env.REACT_APP_BACKEND_URL || "https://gcsharpweb.onrender.com";
-            window.location.href = `${backendUrl}/api/auth/google/login?redirect=${encodeURIComponent(window.location.origin)}`;
+            const returnUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`;
+            window.location.href = `${backendUrl}/api/auth/google/login?redirect=${encodeURIComponent(returnUrl)}`;
         } catch (error) {
             console.error("Google login error:", error);
             throw error;

@@ -950,6 +950,13 @@ export default function SignIn() {
     const [error, setError] = useState("");
 
     const { loginWithGoogle } = useAuth() || {};
+    const nextPath = searchParams.get("next");
+    const redirectAfterAuth = () => {
+        const safePath = nextPath && nextPath.startsWith("/") && !nextPath.startsWith("//")
+            ? nextPath
+            : "/dashboard";
+        window.location.href = safePath;
+    };
 
     const isSignup = mode === "signup";
     const canSubmit =
@@ -1097,7 +1104,7 @@ export default function SignIn() {
                     if (response.data.session_token) {
                         localStorage.setItem("session_token", response.data.session_token);
                         console.log("✅ Session token stored from registration");
-                        window.location.href = "/dashboard";
+                        redirectAfterAuth();
                         return;
                     }
 
@@ -1119,7 +1126,7 @@ export default function SignIn() {
                                 localStorage.setItem("user", JSON.stringify(loginResponse.data.user));
                             }
                             console.log("✅ Auto-login successful!");
-                            window.location.href = "/dashboard";
+                            redirectAfterAuth();
                             return;
                         } else {
                             setError("Registration successful but auto-login failed. Please sign in manually.");
@@ -1165,7 +1172,7 @@ export default function SignIn() {
                         setUser(response.data.user);
                     }
 
-                    window.location.href = "/dashboard";
+                    redirectAfterAuth();
                 } else {
                     setError(response.data?.message || "Login failed. Please try again.");
                 }
