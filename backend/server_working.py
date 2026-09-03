@@ -1617,6 +1617,7 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
     async def event_gen():
         full = ""
+        reply_succeeded = False
         try:
             context_prefix = ""
             if history:
@@ -1627,6 +1628,7 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
             response = await chat.send_message(context_prefix + req.message)
             full = response
+            reply_succeeded = bool(full.strip())
 
             for chunk in [response[i:i+50] for i in range(0, len(response), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
@@ -1646,6 +1648,13 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
             {"session_id": session_id, "user_id": user["user_id"]},
             {"$set": {"messages": new_messages, "updated_at": datetime.now(timezone.utc).isoformat()}},
         )
+        if reply_succeeded:
+            await create_notification(
+                user["user_id"],
+                "GC AI has replied to your question.",
+                type="info",
+                link="/ai",
+            )
         yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
 
     return StreamingResponse(
