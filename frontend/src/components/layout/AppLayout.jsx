@@ -275,7 +275,7 @@ import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
     GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video,
-    Check, XCircle, Info, AlertCircle,Flame 
+    Check, XCircle, Info, AlertCircle, Flame
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -285,6 +285,12 @@ import { toast } from "sonner";
 
 // WebSocket URL (adjust to your backend)
 const SOCKET_URL = import.meta.env.VITE_API_URL || "https://gcsharpweb.onrender.com";
+
+function urlBase64ToUint8Array(value) {
+    const padding = "=".repeat((4 - (value.length % 4)) % 4);
+    const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+    return Uint8Array.from(window.atob(base64), (character) => character.charCodeAt(0));
+}
 
 const NAV = [
     { key: "dashboard", label: "Dashboard", icon: LayoutGrid, path: "/dashboard" },
@@ -473,6 +479,31 @@ export default function AppLayout({ children }) {
         if (user?.user_id) {
             fetchNotifications();
         }
+    }, [user]);
+
+    // Register this device for notifications that arrive while the site is closed.
+    useEffect(() => {
+        if (!user?.user_id || !("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+        const registerPush = async () => {
+            const permission = await Notification.requestPermission();
+            if (permission !== "granted") return;
+
+            const registration = await navigator.serviceWorker.register("/push-sw.js");
+            const { data } = await api.get("/notifications/push-key");
+            let subscription = await registration.pushManager.getSubscription();
+            if (!subscription) {
+                subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(data.public_key),
+                });
+            }
+            await api.post("/notifications/push-subscription", subscription.toJSON());
+        };
+
+        registerPush().catch((error) => {
+            console.error("Push notification registration failed:", error);
+        });
     }, [user]);
 
     // ----- Request notification permission -----

@@ -27,6 +27,11 @@ from bson import ObjectId
 
 from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+try:
+    from pywebpush import webpush, WebPushException
+except ImportError:
+    webpush = None
+    WebPushException = Exception
 
 # APScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -66,6 +71,9 @@ GOOGLE_CALLBACK = (
 )
 GOOGLE_CLIENT_ID = os.environ.get('CLIENT_ID', '')
 GOOGLE_CLIENT_SECRET = os.environ.get('CLIENT_SECRET', '')
+VAPID_PUBLIC_KEY = os.environ.get('VAPID_PUBLIC_KEY', '')
+VAPID_PRIVATE_KEY = os.environ.get('VAPID_PRIVATE_KEY', '')
+VAPID_CLAIMS_EMAIL = os.environ.get('VAPID_CLAIMS_EMAIL', 'mailto:no-reply@gcsharp.com')
 FRONTEND_URLS = {
     origin.strip().rstrip('/')
     for origin in os.environ.get(
@@ -453,6 +461,10 @@ class EmailSignupRequest(BaseModel):
     name: str
     email: str
     password: str
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str
+    keys: Dict[str, str]
 
 # ============================================================
 # Settings Models
@@ -2431,7 +2443,34 @@ async def create_notification(user_id: str, message: str, type: str = "info", li
     notif["_id"] = str(result.inserted_id)
     # Send real‑time via WebSocket
     await manager.send_personal_message(notif, user_id)
+    await send_web_push(user_id, notif)
     return notif
+
+async def send_web_push(user_id: str, notification: dict):
+    if not webpush or not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
+        return
+
+    subscriptions = await db.push_subscriptions.find({"user_id": user_id}, {"_id": 0}).to_list(50)
+    payload = json.dumps({
+        "title": "GCSHARP",
+        "body": notification["message"],
+        "url": notification.get("link") or "/dashboard",
+    })
+    for subscription in subscriptions:
+        try:
+            await asyncio.to_thread(
+                webpush,
+                subscription_info=subscription["subscription"],
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_CLAIMS_EMAIL},
+            )
+        except WebPushException as error:
+            status_code = getattr(getattr(error, "response", None), "status_code", None)
+            if status_code in (404, 410):
+                await db.push_subscriptions.delete_one({"user_id": user_id, "endpoint": subscription["endpoint"]})
+            else:
+                logger.warning("Web Push delivery failed for user=%s: %s", user_id, error)
 
 async def get_study_time_for_date(user_id: str, target_date: date) -> int:
     """Returns total seconds studied on that UTC calendar date."""
@@ -2683,6 +2722,27 @@ async def websocket_notifications(websocket: WebSocket, user_id: str = None):
 # ============================================================
 # Notification REST Endpoints
 # ============================================================
+
+@api_router.get("/notifications/push-key")
+async def get_push_public_key():
+    if not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=503, detail="Push notifications are not configured")
+    return {"public_key": VAPID_PUBLIC_KEY}
+
+@api_router.post("/notifications/push-subscription")
+async def save_push_subscription(req: PushSubscriptionRequest, user: dict = Depends(get_current_user)):
+    subscription = {"endpoint": req.endpoint, "keys": req.keys}
+    await db.push_subscriptions.update_one(
+        {"user_id": user["user_id"], "endpoint": req.endpoint},
+        {"$set": {"user_id": user["user_id"], "endpoint": req.endpoint, "subscription": subscription, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api_router.delete("/notifications/push-subscription")
+async def delete_push_subscription(endpoint: str, user: dict = Depends(get_current_user)):
+    await db.push_subscriptions.delete_one({"user_id": user["user_id"], "endpoint": endpoint})
+    return {"ok": True}
 
 @api_router.get("/notifications")
 async def get_notifications(user: dict = Depends(get_current_user)):
