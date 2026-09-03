@@ -619,6 +619,7 @@ async def _create_google_session(profile: dict, response: Response):
         secure=GOOGLE_CALLBACK.startswith('https://'), samesite='lax', path='/',
         max_age=7 * 24 * 60 * 60,
     )
+    return user, session_token
 
 
 @api_router.get('/auth/google/login')
@@ -687,7 +688,12 @@ async def google_callback(request: Request, code: Optional[str] = None,
         return RedirectResponse(f'{_frontend_redirect(redirect_target)}/?auth_error=google')
 
     response = RedirectResponse(redirect_target, status_code=302)
-    await _create_google_session(profile_response.json(), response)
+    user, session_token = await _create_google_session(profile_response.json(), response)
+    destination = '/onboarding' if not user.get('onboarded') else '/dashboard'
+    frontend_origin = _frontend_redirect(redirect_target)
+    response.headers['location'] = (
+        f'{frontend_origin}{destination}#auth_token={session_token}&user_id={user["user_id"]}'
+    )
     response.delete_cookie('google_oauth_state', path='/')
     response.delete_cookie('google_oauth_redirect', path='/')
     return response

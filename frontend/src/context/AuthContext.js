@@ -201,6 +201,20 @@ export function AuthProvider({ children }) {
         const params = new URLSearchParams(window.location.search);
         const sessionId = params.get("session_id");
         const hash = window.location.hash;
+        const authHash = new URLSearchParams(hash.replace(/^#/, ""));
+        const authToken = authHash.get("auth_token");
+        const authUserId = authHash.get("user_id");
+
+        if (authToken) {
+            localStorage.setItem("session_token", authToken);
+            if (authUserId) localStorage.setItem("user_id", authUserId);
+            window.history.replaceState({}, document.title, window.location.pathname);
+            checkAuth().then(() => {
+                const storedUser = JSON.parse(localStorage.getItem("user") || "null");
+                window.location.href = storedUser?.onboarded ? "/dashboard" : "/onboarding";
+            });
+            return;
+        }
 
         if (sessionId || hash?.includes("session_id=")) {
             const id = sessionId || hash.split("session_id=")[1]?.split("&")[0];
