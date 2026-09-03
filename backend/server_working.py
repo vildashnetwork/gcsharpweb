@@ -2,6 +2,7 @@
 import os
 import io
 import re
+import unicodedata
 import json
 import uuid
 import hashlib
@@ -2103,7 +2104,9 @@ def _public_paper(paper: dict) -> dict:
     }
 
 def _paper_slug(title: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (title or "untitled-paper").lower()).strip("-")
+    normalized = unicodedata.normalize("NFKD", title or "untitled-paper")
+    ascii_title = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "-", ascii_title.lower()).strip("-")
 
 @api_router.get("/public/papers")
 async def list_public_papers(q: Optional[str] = None):
