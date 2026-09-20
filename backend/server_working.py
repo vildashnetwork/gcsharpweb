@@ -3333,11 +3333,53 @@ async def root():
             "ai_research": "/api/ai/research",
             "ai_brain": "/api/ai/brain/stats",
             "ai_health": "/api/ai/health",
+            "study_groups": "/api/groups",
+            "study_groups_socket": "/api/ws/groups/{group_id}",
             "docs": "/docs"
         }
     }
 
 app.include_router(api_router)
+
+# ============================================================
+# Study Groups - real-time group study rooms
+# ============================================================
+# REST under /api/groups/* and the live socket at /api/ws/groups/{group_id}.
+# The module is self-contained; we inject the helpers it needs so there is no
+# circular import with this file.
+
+async def _study_group_engine():
+    """Give the study-group module the shared GC AI engine."""
+    return await _ensure_gc_ai_engine()
+
+
+async def _study_group_pdf_text(url: str, max_chars: int = 6000) -> str:
+    """Fetch a paper PDF and return its text so GC AI can read it."""
+    try:
+        data = await fetch_pdf_bytes(url)
+        return extract_pdf_text(data, max_chars=max_chars)
+    except Exception as e:
+        logger.warning(f"Study group paper text extraction failed: {e}")
+        return ""
+
+
+try:
+    import study_groups as study_groups_module
+
+    app.include_router(
+        study_groups_module.configure(
+            db=db,
+            get_current_user=get_current_user,
+            create_notification=create_notification,
+            get_engine=_study_group_engine,
+            fetch_pdf_text=_study_group_pdf_text,
+        )
+    )
+    logger.info(
+        "Study Groups mounted: /api/groups (REST) + /api/ws/groups/{group_id} (WebSocket)"
+    )
+except Exception as e:  # pragma: no cover - the rest of the app keeps working
+    logger.error(f"Study Groups could not be mounted: {e}")
 
 # ============================================================
 # Startup: bring GC AI online before the first request
@@ -3360,6 +3402,18 @@ async def startup_gc_ai():
         )
     except Exception as e:  # pragma: no cover - startup must never crash the app
         logger.error(f"GC AI startup warm-up failed: {e}")
+
+    # Study group indexes - message history and membership lookups are hot paths.
+    try:
+        await db.study_group_messages.create_index([("group_id", 1), ("seq", -1)])
+        await db.study_group_messages.create_index([("group_id", 1), ("deleted_for", 1)])
+        await db.study_groups.create_index([("members.user_id", 1)])
+        await db.study_groups.create_index([("level", 1), ("updated_at", -1)])
+        await db.study_group_requests.create_index([("group_id", 1), ("status", 1)])
+        await db.study_group_voice.create_index([("audio_id", 1)], unique=True)
+        logger.info("Study group indexes ensured")
+    except Exception as e:  # pragma: no cover - indexes are an optimisation
+        logger.warning(f"Study group index setup skipped: {e}")
 
 # ============================================================
 # Scheduler

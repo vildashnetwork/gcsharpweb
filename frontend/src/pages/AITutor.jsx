@@ -584,12 +584,12 @@ export default function AITutor() {
                                             <Pin className="h-3.5 w-3.5 text-muted-foreground" />
                                         )}
                                     </button>
-                                    <button
+                                    {/* <button
                                         onClick={(e) => deleteChat(s.session_id, e)}
                                         className="opacity-0 group-hover:opacity-100 p-1 hover:bg-destructive/10 rounded transition-all"
                                     >
                                         <Trash2 className="h-3.5 w-3.5 text-muted-foreground hover:text-destructive" />
-                                    </button>
+                                    </button> */}
                                 </div>
                             </button>
                         ))

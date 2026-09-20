@@ -275,7 +275,7 @@ import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
     GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video,
-    Check, XCircle, Info, AlertCircle, Flame
+    Check, XCircle, Info, AlertCircle, Flame, Users
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -295,6 +295,7 @@ function urlBase64ToUint8Array(value) {
 const NAV = [
     { key: "dashboard", label: "Dashboard", icon: LayoutGrid, path: "/dashboard" },
     { key: "study", label: "Study Center", icon: BookOpen, path: "/study" },
+    { key: "groups", label: "Study Groups", icon: Users, path: "/groups" },
     { key: "ai", label: "AI Assistant", icon: Bot, path: "/ai" },
     { key: "analytics", label: "Analytics", icon: BarChart3, path: "/analytics" },
     { key: "lesson-videos", label: "Lesson Videos", icon: Video, path: "/videos" },
@@ -394,6 +395,10 @@ export default function AppLayout({ children }) {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [socket, setSocket] = useState(null);
 
+    // Study-groups unread badge state
+    const [groupUnreadMap, setGroupUnreadMap] = useState({});
+    const [groupMeta, setGroupMeta] = useState(null);
+
     const initials = (user?.name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
 
     // ----- Fetch initial notifications -----
@@ -404,6 +409,17 @@ export default function AppLayout({ children }) {
             setUnreadCount(res.data.filter(n => !n.read).length);
         } catch (err) {
             console.error("Failed to fetch notifications", err);
+        }
+    };
+
+    // ----- Fetch study-groups summary (unread badge) -----
+    const fetchGroupMeta = async () => {
+        try {
+            const res = await api.get("/groups/summary/badges");
+            setGroupMeta(res.data);
+            setGroupUnreadMap(res.data?.unread_by_group || {});
+        } catch (err) {
+            console.error("Failed to fetch group badges", err);
         }
     };
 
@@ -450,6 +466,14 @@ export default function AppLayout({ children }) {
             setNotifications(prev => [data, ...prev]);
             setUnreadCount(prev => prev + 1);
 
+            // Keep the bottom-tab group unread badge fresh when a group notification arrives.
+            if (data?.type === "group_message" && data?.link?.startsWith("/groups/")) {
+                try {
+                    const group_id = data.link.slice("/groups/".length).split("/")[0];
+                    if (group_id) fetchGroupMeta();
+                } catch (_) { /* best effort */ }
+            }
+
             // Show browser notification if supported
             if ("Notification" in window && Notification.permission === "granted") {
                 new Notification("GCSHARP", {
@@ -478,6 +502,7 @@ export default function AppLayout({ children }) {
     useEffect(() => {
         if (user?.user_id) {
             fetchNotifications();
+            fetchGroupMeta();
         }
     }, [user]);
 
@@ -717,7 +742,32 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
+                {/* Mobile bottom tab bar — quick switch to Study Groups */}
+                <nav className="lg:hidden flex items-center gap-1 px-2 pb-1 pt-1 border-t border-border/60 bg-sidebar/90 backdrop-blur shrink-0">
+                    {NAV.filter(item => ["dashboard", "study", "groups", "ai", "analytics"].includes(item.key)).map((item) => {
+                        const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
+                        const isGroups = item.key === "groups";
+                        const badge = isGroups && typeof groupUnreadMap === "object" ? groupUnreadMap[item.key] : null;
+                        return (
+                            <button
+                                key={item.key}
+                                data-testid={`bottom-tab-${item.key}`}
+                                onClick={() => { navigate(item.path); setMobileOpen(false); }}
+                                className={`relative flex-1 flex items-center justify-center py-2 rounded-lg text-xs font-medium transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                            >
+                                <item.icon className="h-4.5 w-4.5" />
+                                <span className="ml-1.5">{item.label}</span>
+                                {isGroups && badge != null && badge > 0 && (
+                                    <span className="absolute -top-1 right-1/2 -translate-x-1/2 h-4 w-4 rounded-full bg-destructive text-white text-[9px] flex items-center justify-center font-bold">
+                                        {badge > 99 ? "99+" : badge}
+                                    </span>
+                                )}
+                            </button>
+                        );
+                    })}
+                </nav>
+
+                <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-16 lg:pb-8">{children}</main>
             </div>
         </div>
     );
