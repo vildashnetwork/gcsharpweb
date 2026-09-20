@@ -6,7 +6,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { API } from "@/lib/api";
 import { groupSocketUrl, voiceNoteUrl } from "@/lib/realtime";
 import { useAuth } from "@/context/AuthContext";
-import { useVoiceRecorder } from "@/hooks/useVoiceRecorder";
+import useVoiceRecorder from "@/hooks/useVoiceRecorder";
 import GroupMessage from "@/components/studygroup/GroupMessage";
 import PaperPicker from "@/components/studygroup/PaperPicker";
 import MembersPanel from "@/components/studygroup/MembersPanel";
