@@ -2,6 +2,7 @@
 import os
 import io
 import re
+import sys
 import unicodedata
 import json
 import uuid
@@ -36,6 +37,29 @@ except ImportError:
 # APScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
+# ============================================================
+# GC AI - self-contained intelligence layer
+# ============================================================
+# gc_ai gives every AI feature in this app a four-layer safety net:
+#   local solvers -> knowledge base -> multi-provider LLM -> web search + learn
+# If the package is somehow unavailable the app still boots and falls back to
+# the legacy OpenRouter-only path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    from gc_ai import init_engine, get_engine
+    from gc_ai.engine import MODE_LABELS as GC_AI_MODE_LABELS
+    GC_AI_AVAILABLE = True
+except Exception as _gc_ai_import_error:  # pragma: no cover - defensive
+    GC_AI_AVAILABLE = False
+    GC_AI_MODE_LABELS = {}
+
+    def get_engine():  # type: ignore[misc]
+        return None
+
+    async def init_engine(*args, **kwargs):  # type: ignore[misc]
+        raise RuntimeError("gc_ai package not available")
+
 
 # ============================================================
 # Setup logging FIRST - before using logger anywhere
@@ -139,10 +163,16 @@ app.add_middleware(
 # ============================================================
 
 DEFAULT_MODEL_CHAIN = [
-    "google/gemma-4-31b-it:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "openai/gpt-oss-20b:free",
-    "openrouter/free",
+    # Mirrors gc_ai.llm.OPENROUTER_FREE_CHAIN - these are the models that are
+    # actually available on OpenRouter's free tier today. The GC AI provider
+    # chain also tries Groq, Gemini, DeepSeek, Mistral, Together and OpenAI
+    # when their keys are configured, so OpenRouter is never a single point of
+    # failure.
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "openrouter/auto",
 ]
 
 # ============================================================
@@ -235,6 +265,14 @@ def _get_model_chain() -> List[str]:
     return ordered
 
 class SimpleLLM:
+    """Legacy-compatible chat client.
+
+    Every call now goes through the GC AI engine when it is available, which
+    means: multi-provider chain, knowledge-base grounding, web search fallback
+    and permanent learning. The old OpenRouter-only path is kept purely as an
+    emergency fallback so this class keeps working even if gc_ai is missing.
+    """
+
     def __init__(self, api_key: str = "", models: Optional[List[str]] = None):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.models = models or _get_model_chain()
@@ -243,6 +281,11 @@ class SimpleLLM:
         self.session_id = None
         self.referer = os.environ.get("APP_URL", "https://gcsharpweb.onrender.com")
         self.title = os.environ.get("APP_NAME", "GCSMART AI")
+        # GC AI engine options (set by _new_chat callers)
+        self.gc_subject = "General"
+        self.gc_use_web = True
+        self.gc_use_knowledge = True
+        self.gc_use_llm = True
 
     async def _call_model(self, hc: httpx.AsyncClient, model: str, message: str) -> Optional[str]:
         payload = {
@@ -291,6 +334,26 @@ class SimpleLLM:
         return None
 
     async def send_message(self, message: str) -> str:
+        """Answer via the GC AI engine (never returns a bare failure)."""
+        engine = await _ensure_gc_ai_engine()
+        if engine is not None:
+            try:
+                answer = await engine.answer(
+                    message,
+                    subject=self.gc_subject,
+                    use_llm=self.gc_use_llm,
+                    use_web=self.gc_use_web,
+                    use_knowledge=self.gc_use_knowledge,
+                    system_override=self.system_message or None,
+                )
+                text = (answer.text or "").strip()
+                if text:
+                    logger.info(f"GC AI answered via {answer.mode} ({answer.provider or answer.mode})")
+                    return text
+                logger.warning("GC AI engine returned an empty answer, falling back to OpenRouter")
+            except Exception as e:
+                logger.error(f"GC AI engine error, falling back to OpenRouter: {e}")
+
         if not self.api_key:
             logger.error("OPENROUTER_API_KEY is not configured")
             return self._friendly_failure_message()
@@ -307,9 +370,10 @@ class SimpleLLM:
     @staticmethod
     def _friendly_failure_message() -> str:
         return (
-            "I'm having trouble reaching the AI service right now. "
-            "This is usually temporary — please try again in a moment. "
-            "In the meantime, you can browse past papers or check your dashboard."
+            "I could not finish that answer on the first try. Please ask again in a "
+            "moment - I retry every AI provider, then search the web, then use my own "
+            "knowledge base. You can also open the **GC AI Brain** panel to see what I "
+            "already know, or rephrase your question slightly."
         )
 
 # ============================================================
@@ -520,11 +584,73 @@ manager = ConnectionManager()
 # Auth Helpers
 # ============================================================
 
-def _new_chat(session_id: str, system: str) -> SimpleLLM:
+_gc_ai_engine = None
+_gc_ai_lock = asyncio.Lock()
+
+
+async def _ensure_gc_ai_engine():
+    """Return the shared GC AI engine, creating it on first use.
+
+    Safe to call from any endpoint: returns None (and the caller falls back to
+    the legacy OpenRouter chain) instead of raising if the engine cannot start.
+    """
+    global _gc_ai_engine
+    if not GC_AI_AVAILABLE:
+        return None
+    if _gc_ai_engine is not None:
+        return _gc_ai_engine
+    async with _gc_ai_lock:
+        if _gc_ai_engine is not None:
+            return _gc_ai_engine
+        try:
+            _gc_ai_engine = await init_engine(
+                db=db,
+                math_solver=solve_math_local,
+                model_chain=_get_model_chain(),
+                enable_web=os.environ.get("GC_AI_WEB_SEARCH", "1") != "0",
+            )
+            logger.info("GC AI engine initialised")
+        except Exception as e:
+            logger.error(f"Could not initialise the GC AI engine: {e}")
+            _gc_ai_engine = None
+    return _gc_ai_engine
+
+
+async def _gc_ai_emergency_answer(question: str, subject: str = "General") -> str:
+    """Last-resort answer: uses only local logic and the knowledge base.
+
+    This path performs no network calls at all, so it can always produce
+    something useful instead of an error string.
+    """
+    engine = await _ensure_gc_ai_engine()
+    if engine is not None:
+        try:
+            answer = await engine.answer(
+                question, subject=subject, use_llm=False, use_web=False
+            )
+            if (answer.text or "").strip():
+                return answer.text
+        except Exception as e:
+            logger.error(f"GC AI emergency answer failed: {e}")
+    return (
+        "I could not complete that answer just now. Please try again in a moment.\n\n"
+        "While you wait you can:\n"
+        "- Rephrase the question (for example \"explain the mole concept\").\n"
+        "- Ask me a topic from my knowledge base in the **GC AI Brain** panel.\n"
+        "- Study the same topic from the Papers section, then come back with a "
+        "specific question."
+    )
+
+
+def _new_chat(session_id: str, system: str, subject: str = "General",
+              use_web: bool = True, use_knowledge: bool = True) -> SimpleLLM:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     chat = SimpleLLM(api_key=api_key)
     chat.system_message = system
     chat.session_id = session_id
+    chat.gc_subject = subject or "General"
+    chat.gc_use_web = use_web
+    chat.gc_use_knowledge = use_knowledge
     return chat
 
 async def get_current_user(request: Request):
@@ -1271,7 +1397,7 @@ async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current
 
     try:
         system = "You are a math expert. Solve the problem step by step. Return the final answer clearly."
-        chat = _new_chat(f"solve_{uuid.uuid4().hex[:12]}", system)
+        chat = _new_chat(f"solve_{uuid.uuid4().hex[:12]}", system, subject=req.subject or "General")
         response = await chat.send_message(req.question)
         return {
             "success": True,
@@ -1313,7 +1439,7 @@ async def generate_questions(req: GenerateQuestionsRequest, user: dict = Depends
         "topic (short topic name), difficulty (one of easy/medium/hard), marks (integer 1-4). "
         "Make questions realistic and curriculum-appropriate. Return ONLY the JSON object."
     )
-    chat = _new_chat(f"gen_{uuid.uuid4().hex}", system)
+    chat = _new_chat(f"gen_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
     resp = await chat.send_message(prompt)
     try:
         data = _clean_json(resp)
@@ -1613,36 +1739,66 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
         "Explain step by step, use clear structure, give worked examples, and end with a short "
         "'Related topics' list when helpful. Be encouraging and exam-focused."
     )
-    chat = _new_chat(session_id, system)
+    engine = await _ensure_gc_ai_engine()
+    chat = _new_chat(session_id, system, subject=req.subject or "General")
 
     async def event_gen():
         full = ""
         reply_succeeded = False
+        meta_payload = {}
         try:
-            context_prefix = ""
-            if history:
-                recent = history[-6:]
-                context_prefix = "Conversation so far:\n" + "\n".join(
-                    f"{m['role'].upper()}: {m['content']}" for m in recent
-                ) + "\n\nNow answer the new question.\n\n"
-
-            response = await chat.send_message(context_prefix + req.message)
-            full = response
-            reply_succeeded = bool(full.strip())
-
-            for chunk in [response[i:i+50] for i in range(0, len(response), 50)]:
-                yield f"data: {json.dumps({'delta': chunk})}\n\n"
+            if engine is not None:
+                # GC AI pipeline: NLP -> local -> knowledge base -> LLM -> web.
+                async for event in engine.run(
+                    req.message,
+                    subject=req.subject or "General",
+                    history=history,
+                ):
+                    if "status" in event:
+                        yield f"data: {json.dumps({'status': event['status']})}\n\n"
+                    elif "meta" in event:
+                        meta_payload = event["meta"]
+                        yield f"data: {json.dumps({'meta': meta_payload})}\n\n"
+                    elif "delta" in event:
+                        full += event["delta"]
+                        yield f"data: {json.dumps({'delta': event['delta']})}\n\n"
+                reply_succeeded = bool(full.strip())
+            else:
+                # Legacy path (gc_ai unavailable): still resilient, no bare errors.
+                context_prefix = ""
+                if history:
+                    recent = history[-6:]
+                    context_prefix = "Conversation so far:\n" + "\n".join(
+                        f"{m['role'].upper()}: {m['content']}" for m in recent
+                    ) + "\n\nNow answer the new question.\n\n"
+                response = await chat.send_message(context_prefix + req.message)
+                full = response
+                reply_succeeded = bool(full.strip())
+                for chunk in [response[i:i + 50] for i in range(0, len(response), 50)]:
+                    yield f"data: {json.dumps({'delta': chunk})}\n\n"
 
         except Exception as e:
             logger.error(f"AI stream error: {e}")
-            error_msg = "I'm having trouble connecting to my AI service. Please try again in a moment."
-            full = error_msg
-            for chunk in [error_msg[i:i+50] for i in range(0, len(error_msg), 50)]:
+            full = await _gc_ai_emergency_answer(req.message, req.subject or "General")
+            meta_payload = {
+                "mode": "offline",
+                "mode_label": "GC AI offline mode",
+                "sources": [],
+                "learned": False,
+            }
+            yield f"data: {json.dumps({'meta': meta_payload})}\n\n"
+            for chunk in [full[i:i + 50] for i in range(0, len(full), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
 
         new_messages = history + [
             {"role": "user", "content": req.message, "ts": datetime.now(timezone.utc).isoformat()},
-            {"role": "assistant", "content": full, "ts": datetime.now(timezone.utc).isoformat()},
+            {
+                "role": "assistant",
+                "content": full,
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "mode": meta_payload.get("mode"),
+                "sources": meta_payload.get("sources", []),
+            },
         ]
         await db.ai_sessions.update_one(
             {"session_id": session_id, "user_id": user["user_id"]},
@@ -1670,11 +1826,31 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 @api_router.get("/ai/health")
 async def ai_health(user: dict = Depends(get_current_user)):
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    engine = await _ensure_gc_ai_engine()
+    engine_health = engine.health() if engine is not None else {
+        "ready": False,
+        "verdict": "GC AI engine is not available - check server logs.",
+    }
     result = {
+        "gc_ai": engine_health,
+        "openrouter": {
+            "api_key_configured": bool(api_key),
+            "api_key_prefix": (api_key[:12] + "...") if api_key else None,
+        },
+        # Kept for backward compatibility with the Settings/diagnostics screen.
         "api_key_configured": bool(api_key),
         "api_key_prefix": (api_key[:12] + "...") if api_key else None,
         "models_tested": [],
     }
+
+    if engine is not None:
+        stats = engine.stats()
+        result["gc_ai"]["answer_modes"] = stats["answer_modes"]
+        result["gc_ai"]["knowledge"] = stats["knowledge"]
+        result["gc_ai"]["learning"] = stats["learning"]
+        result["gc_ai"]["providers_available"] = stats["providers"]["available"]
+        result["diagnosis"] = engine_health.get("verdict")
+        return result
 
     if not api_key:
         result["diagnosis"] = "OPENROUTER_API_KEY is not set in this environment. Set it in Render's dashboard under Environment, not just your local .env."
@@ -1732,23 +1908,180 @@ async def ai_health(user: dict = Depends(get_current_user)):
 
     return result
 
+# ============================================================
+# GC AI - ask / research / brain (knowledge base) endpoints
+# ============================================================
+
+class GCAskRequest(BaseModel):
+    question: str
+    subject: Optional[str] = "General"
+    session_id: Optional[str] = None
+    allow_web: bool = True
+    allow_llm: bool = True
+
+
+class GCResearchRequest(BaseModel):
+    query: str
+    subject: Optional[str] = "General"
+    limit: int = 5
+    fetch_top: int = 3
+    learn: bool = True
+
+
+class GCTeachRequest(BaseModel):
+    question: str
+    answer: str
+    subject: Optional[str] = "General"
+    tags: Optional[List[str]] = None
+    intent: Optional[str] = "general_question"
+
+
+class GCFeedbackRequest(BaseModel):
+    entry_id: str
+    helpful: bool = True
+    note: Optional[str] = ""
+
+
+@api_router.post("/ai/ask")
+async def ai_ask(req: GCAskRequest, user: dict = Depends(get_current_user)):
+    """Full GC AI pipeline, non-streaming: answers plus how it answered."""
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        text = await _gc_ai_emergency_answer(req.question, req.subject or "General")
+        return {"answer": text, "mode": "offline", "mode_label": "GC AI offline mode",
+                "learned": False, "sources": []}
+    answer = await engine.answer(
+        req.question,
+        subject=req.subject or "General",
+        use_llm=req.allow_llm,
+        use_web=req.allow_web,
+    )
+    return answer.as_dict()
+
+
+@api_router.post("/ai/research")
+async def ai_research(req: GCResearchRequest, user: dict = Depends(get_current_user)):
+    """Search the web (Google when configured) and optionally learn from it."""
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    limit = max(1, min(req.limit, 10))
+    fetch_top = max(0, min(req.fetch_top, 5))
+    bundle = await engine.research(req.query, limit=limit, fetch_top=fetch_top)
+    learned_id = None
+    if req.learn and bundle.get("context_preview"):
+        entry = await engine.knowledge.learn(
+            question=req.query,
+            answer=bundle["context_preview"],
+            subject=req.subject or "General",
+            source="web",
+            source_url=(bundle.get("sources") or [{}])[0].get("url", ""),
+            confidence=0.6,
+        )
+        learned_id = entry.entry_id if entry else None
+    bundle["learned_id"] = learned_id
+    return bundle
+
+
+@api_router.get("/ai/brain/stats")
+async def ai_brain_stats(user: dict = Depends(get_current_user)):
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    return engine.stats()
+
+
+@api_router.get("/ai/brain/search")
+async def ai_brain_search(q: str, limit: int = 10, user: dict = Depends(get_current_user)):
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    limit = max(1, min(limit, 50))
+    matches = engine.knowledge.search(q, top_k=limit, min_score=0.05)
+    return {
+        "query": q,
+        "count": len(matches),
+        "results": [
+            {**m.entry.as_public(), "score": round(m.score, 3)} for m in matches
+        ],
+    }
+
+
+@api_router.get("/ai/brain/recent")
+async def ai_brain_recent(limit: int = 25, user: dict = Depends(get_current_user)):
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    limit = max(1, min(limit, 100))
+    return {
+        "recent": engine.knowledge.recent(limit),
+        "most_used": engine.knowledge.top(10),
+    }
+
+
+@api_router.post("/ai/brain/teach")
+async def ai_brain_teach(req: GCTeachRequest, user: dict = Depends(get_current_user)):
+    """Teach GC AI a fact - it is stored permanently in the knowledge base."""
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    entry = await engine.teach(
+        question=req.question,
+        answer=req.answer,
+        subject=req.subject or "General",
+        tags=req.tags,
+        intent=req.intent or "general_question",
+    )
+    if entry is None:
+        raise HTTPException(status_code=400, detail="Question or answer is too short to learn")
+    return {"ok": True, "entry": entry, "learned_by": user.get("name") or user["user_id"]}
+
+
+@api_router.post("/ai/brain/feedback")
+async def ai_brain_feedback(req: GCFeedbackRequest, user: dict = Depends(get_current_user)):
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    entry = await engine.feedback(req.entry_id, req.helpful, note=req.note or "")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"ok": True, "entry": entry}
+
+
+@api_router.delete("/ai/brain/{entry_id}")
+async def ai_brain_forget(entry_id: str, user: dict = Depends(get_current_user)):
+    engine = await _ensure_gc_ai_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="GC AI engine is not available")
+    deleted = await engine.knowledge.delete(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"ok": True, "deleted": entry_id}
+
+
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
     local_result = solve_math_local(req.message)
     if local_result:
-        return {"answer": local_result, "source": "local_solver"}
+        return {"answer": local_result, "source": "local_solver", "mode": "local"}
+
+    engine = await _ensure_gc_ai_engine()
+    if engine is not None:
+        answer = await engine.answer(req.message, subject=req.subject or "General")
+        return {
+            "answer": answer.text,
+            "source": answer.mode,
+            "mode": answer.mode,
+            "mode_label": answer.mode_label,
+            "sources": answer.sources,
+            "confidence": answer.confidence,
+            "learned": answer.learned,
+        }
 
     system = "You are GC AI, an expert exam tutor. Give a concise, clear step-by-step explanation."
-    chat = _new_chat(f"explain_{uuid.uuid4().hex}", system)
-    try:
-        resp = await chat.send_message(req.message)
-        return {"answer": resp, "source": "ai_solver"}
-    except Exception as e:
-        logger.error(f"AI explain error: {e}")
-        return {
-            "answer": "I'm having trouble connecting to my AI service. Please try again in a moment.",
-            "source": "error",
-        }
+    chat = _new_chat(f"explain_{uuid.uuid4().hex}", system, subject=req.subject or "General")
+    resp = await chat.send_message(req.message)
+    return {"answer": resp, "source": "ai_solver", "mode": "reasoning"}
 
 # ============================================================
 # Teacher: Courses & Earnings
@@ -2257,7 +2590,7 @@ async def generate_paper_qa(paper_id: str, user: dict = Depends(get_current_user
         "Return JSON: {\"items\":[{\"number\":\"1\",\"question\":\"...\",\"steps\":[\"step 1\",\"step 2\"],\"answer\":\"final answer\"}]}. "
         "Solve at least the first 8 questions you can identify. Keep steps concise and mathematically correct. Return ONLY JSON."
     )
-    chat = _new_chat(f"qa_{uuid.uuid4().hex}", system)
+    chat = _new_chat(f"qa_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
     resp = await chat.send_message(prompt)
     try:
         parsed = _clean_json(resp)
@@ -2292,7 +2625,7 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
         "\"board\":[\"line shown on whiteboard\",\"another line\"],\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
         "Create 4 to 6 scenes ending with the final answer. Narration must be natural spoken English. Return ONLY JSON."
     )
-    chat = _new_chat(f"vid_{uuid.uuid4().hex}", system)
+    chat = _new_chat(f"vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
     resp = await chat.send_message(prompt)
     try:
         parsed = _clean_json(resp)
@@ -2344,7 +2677,7 @@ async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user
         "The final numeric or symbolic result, stated in one line.\n\n"
         "Be concise. Do not restate the question. Do not apologize or hedge."
     )
-    chat = _new_chat(f"ask_{uuid.uuid4().hex}", system)
+    chat = _new_chat(f"ask_{uuid.uuid4().hex}", system, subject=subject)
     resp = await chat.send_message(f"Question:\n\n{req.question}")
     resp = _strip_reasoning_preamble(resp)
     return {"answer": resp}
@@ -2949,7 +3282,7 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
         "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
     )
 
-    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
+    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
 
     try:
         parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
@@ -2995,12 +3328,38 @@ async def root():
             "exam": "/api/exam/structure",
             "solve": "/api/solve",
             "papers": "/api/papers",
-            "ai": "/api/ai/chat",
+            "ai_chat": "/api/ai/chat",
+            "ai_ask": "/api/ai/ask",
+            "ai_research": "/api/ai/research",
+            "ai_brain": "/api/ai/brain/stats",
+            "ai_health": "/api/ai/health",
             "docs": "/docs"
         }
     }
 
 app.include_router(api_router)
+
+# ============================================================
+# Startup: bring GC AI online before the first request
+# ============================================================
+
+@app.on_event("startup")
+async def startup_gc_ai():
+    """Warm up GC AI so the first question is never a cold start."""
+    try:
+        engine = await _ensure_gc_ai_engine()
+        if engine is None:
+            logger.warning("GC AI engine unavailable - falling back to OpenRouter chain")
+            return
+        health = engine.health()
+        logger.info(
+            "GC AI online | memories=%s | llm=%s | search=%s",
+            health.get("knowledge_memories"),
+            health.get("llm_providers_available"),
+            health.get("web_search_providers"),
+        )
+    except Exception as e:  # pragma: no cover - startup must never crash the app
+        logger.error(f"GC AI startup warm-up failed: {e}")
 
 # ============================================================
 # Scheduler

@@ -11,9 +11,12 @@ import { Button } from "../components/ui/button";
 import {
     Bot, Send, Sparkles, Calculator, BookOpen, CalendarClock, ListChecks, Layers, FileText, User,
     Menu, X, Plus, Trash2, Clock, ChevronRight, Loader2, Pin, PinOff, Mic, MicOff,
+    Brain, ThumbsUp, ThumbsDown, Globe, Cpu, Database,
 } from "lucide-react";
 import Markdown from "../components/Markdown";
 import SpeechRecognition, { useSpeechRecognition } from 'react-speech-recognition';
+import AIKnowledgePanel from "../components/AIKnowledgePanel";
+
 
 const SUBJECTS = ["General", "Mathematics", "Physics", "Chemistry", "Biology", "Economics", "English Language", "French", "Computer Science"];
 const QUICK = [
@@ -25,7 +28,24 @@ const QUICK = [
     { icon: FileText, label: "Summarize a topic", prompt: "Summarize the key points of " },
 ];
 
-const STREAM_TIMEOUT_MS = 45_000;
+const STREAM_TIMEOUT_MS = 90_000;
+
+// The backend accepts the session cookie or a bearer token. Sending both keeps
+// the AI tutor working even when third-party cookies are blocked by the browser.
+function authHeaders(extra = {}) {
+    const token = localStorage.getItem("session_token");
+    return token ? { ...extra, Authorization: `Bearer ${token}` } : { ...extra };
+}
+
+// How GC AI answered, shown under each reply so students know what they trust.
+const MODE_META = {
+    knowledge: { label: "GC AI knowledge", icon: Database, tone: "text-emerald-500" },
+    local: { label: "GC AI offline tutor", icon: Cpu, tone: "text-emerald-500" },
+    reasoning: { label: "GC AI reasoning", icon: Cpu, tone: "text-amber-500" },
+    web: { label: "Learned from the web", icon: Globe, tone: "text-sky-500" },
+    web_reading: { label: "Read from live sources", icon: Globe, tone: "text-sky-500" },
+    offline: { label: "Offline answer", icon: Brain, tone: "text-muted-foreground" },
+};
 
 export default function AITutor() {
     const { user } = useAuth();
@@ -39,6 +59,9 @@ export default function AITutor() {
     const [loadingSessions, setLoadingSessions] = useState(true);
     const [isNewChat, setIsNewChat] = useState(true);
     const [titleGenerated, setTitleGenerated] = useState(false);
+    const [statusText, setStatusText] = useState("");
+    const [brainOpen, setBrainOpen] = useState(false);
+    const [feedbackGiven, setFeedbackGiven] = useState({});
     const scrollRef = useRef(null);
     const abortRef = useRef(null);
     const sidebarRef = useRef(null);
@@ -100,6 +123,7 @@ export default function AITutor() {
         try {
             const res = await fetch(`${API}/ai/sessions`, {
                 credentials: "include",
+                headers: authHeaders(),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -149,7 +173,7 @@ export default function AITutor() {
             await fetch(`${API}/ai/sessions/${sessionId}/pin`, {
                 method: "PUT",
                 credentials: "include",
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 body: JSON.stringify({ pinned: newPinned }),
             });
 
@@ -181,7 +205,7 @@ export default function AITutor() {
             await fetch(`${API}/ai/sessions/${sessionId}/title`, {
                 method: "PUT",
                 credentials: "include",
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 body: JSON.stringify({ title }),
             });
 
@@ -222,6 +246,7 @@ export default function AITutor() {
         try {
             const res = await fetch(`${API}/ai/sessions/${sessionId}`, {
                 credentials: "include",
+                headers: authHeaders(),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -245,6 +270,7 @@ export default function AITutor() {
             await fetch(`${API}/ai/sessions/${sessionId}`, {
                 method: "DELETE",
                 credentials: "include",
+                headers: authHeaders(),
             });
             setSessions(prev => prev.filter(s => s.session_id !== sessionId));
             if (currentSessionId === sessionId) {
@@ -269,7 +295,7 @@ export default function AITutor() {
     const setLastAssistantMessage = (content) => {
         setMessages((m) => {
             const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content };
+            copy[copy.length - 1] = { ...copy[copy.length - 1], role: "assistant", content };
             return copy;
         });
     };
@@ -277,9 +303,35 @@ export default function AITutor() {
     const appendToLastAssistantMessage = (delta) => {
         setMessages((m) => {
             const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: copy[copy.length - 1].content + delta };
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, role: "assistant", content: last.content + delta };
             return copy;
         });
+    };
+
+    /** Attach GC AI metadata (mode, sources, learned) to the last reply. */
+    const setLastAssistantMeta = (meta) => {
+        setMessages((m) => {
+            const copy = [...m];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, meta };
+            return copy;
+        });
+    };
+
+    const rateAnswer = async (entryId, helpful) => {
+        if (!entryId) return;
+        setFeedbackGiven((prev) => ({ ...prev, [entryId]: helpful }));
+        try {
+            await fetch(`${API}/ai/brain/feedback`, {
+                method: "POST",
+                credentials: "include",
+                headers: authHeaders({ "Content-Type": "application/json" }),
+                body: JSON.stringify({ entry_id: entryId, helpful }),
+            });
+        } catch (err) {
+            console.error("Failed to send GC AI feedback:", err);
+        }
     };
 
     const send = async (text) => {
@@ -296,6 +348,7 @@ export default function AITutor() {
 
         setMessages((m) => [...m, { role: "user", content: messageToSend }, { role: "assistant", content: "" }]);
         setStreaming(true);
+        setStatusText("Thinking...");
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -305,7 +358,7 @@ export default function AITutor() {
             const res = await fetch(`${API}/ai/chat`, {
                 method: "POST",
                 credentials: "include",
-                headers: { "Content-Type": "application/json" },
+                headers: authHeaders({ "Content-Type": "application/json" }),
                 body: JSON.stringify({ message: messageToSend, subject, session_id: currentSessionId }),
                 signal: controller.signal,
             });
@@ -320,14 +373,17 @@ export default function AITutor() {
                         detail = errBody?.detail || "";
                     } catch { }
                     setLastAssistantMessage(
-                        detail || `Something went wrong on our end (${res.status}). Please try again in a moment.`
+                        detail || `I could not start that answer (${res.status}). Please try again - `
+                        + "I retry every AI provider, then the web, then my own knowledge base."
                     );
                 }
                 return;
             }
 
             if (!res.body) {
-                setLastAssistantMessage("Sorry, I couldn't reach the AI. Please try again.");
+                setLastAssistantMessage(
+                    "I could not open a response stream. Please try again in a moment."
+                );
                 return;
             }
 
@@ -348,9 +404,16 @@ export default function AITutor() {
                     if (!line) continue;
                     try {
                         const data = JSON.parse(line);
+                        if (data.status) {
+                            setStatusText(data.status);
+                        }
                         if (data.delta) {
                             receivedAnything = true;
+                            setStatusText("");
                             appendToLastAssistantMessage(data.delta);
+                        }
+                        if (data.meta) {
+                            setLastAssistantMeta(data.meta);
                         }
                         if (data.done && data.session_id) {
                             newSessionId = data.session_id;
@@ -362,7 +425,11 @@ export default function AITutor() {
             }
 
             if (!receivedAnything) {
-                setLastAssistantMessage("I didn't get a response that time. Please try asking again.");
+                setLastAssistantMessage(
+                    "I did not manage to put an answer together that time. Please send it again - "
+                    + "second attempts normally succeed because I retry every provider, then the web, "
+                    + "then my own memory."
+                );
                 return;
             }
 
@@ -374,14 +441,18 @@ export default function AITutor() {
         } catch (err) {
             if (err?.name === "AbortError") {
                 setLastAssistantMessage(
-                    "That's taking longer than expected. Please try again — shorter questions usually respond faster."
+                    "That question took longer than expected. Please try again - shorter, more "
+                    + "specific questions come back fastest."
                 );
             } else {
-                setLastAssistantMessage("Sorry, I couldn't reach the AI. Please check your connection and try again.");
+                setLastAssistantMessage(
+                    "I could not reach the server. Check your connection and send the question again."
+                );
             }
         } finally {
             clearTimeout(timeoutId);
             abortRef.current = null;
+            setStatusText("");
             setStreaming(false);
         }
     };
@@ -570,6 +641,15 @@ export default function AITutor() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                        <button
+                            onClick={() => setBrainOpen(true)}
+                            data-testid="ai-brain-btn"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-secondary transition-colors"
+                            title="See what GC AI has learned and teach it new facts"
+                        >
+                            <Brain className="h-3.5 w-3.5 text-primary" />
+                            <span className="hidden sm:inline">GC AI Brain</span>
+                        </button>
                         <Select value={subject} onValueChange={setSubject}>
                             <SelectTrigger className="w-36 h-8 text-xs" data-testid="ai-subject">
                                 <SelectValue />
@@ -595,8 +675,10 @@ export default function AITutor() {
                                 Hello {user?.name?.split(" ")[0] || "there"}! 👋
                             </h2>
                             <p className="text-muted-foreground max-w-md text-sm">
-                                I'm GC AI, your personal exam coach. Ask me anything about your subjects,
-                                and I'll explain it step by step.
+                                I'm GC AI, your personal exam coach. Ask me anything about your
+                                subjects and I'll explain it step by step. If it is something I
+                                don't know yet, I search the web, learn it and remember it for
+                                next time.
                             </p>
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-6 w-full max-w-lg">
                                 {QUICK.slice(0, 4).map((q) => (
@@ -633,15 +715,81 @@ export default function AITutor() {
                                 {m.role === "user" ? (
                                     m.content
                                 ) : (
-                                    m.content ? (
-                                        <Markdown>{m.content}</Markdown>
-                                    ) : (
-                                        <span className="inline-flex gap-1">
-                                            <span className="animate-pulse">●</span>
-                                            <span className="animate-pulse animation-delay-200">●</span>
-                                            <span className="animate-pulse animation-delay-400">●</span>
-                                        </span>
-                                    )
+                                    <>
+                                        {m.content ? (
+                                            <Markdown>{m.content}</Markdown>
+                                        ) : (
+                                            <span className="inline-flex items-center gap-2 text-muted-foreground">
+                                                <span className="inline-flex gap-1">
+                                                    <span className="animate-pulse">●</span>
+                                                    <span className="animate-pulse animation-delay-200">●</span>
+                                                    <span className="animate-pulse animation-delay-400">●</span>
+                                                </span>
+                                                {streaming && i === messages.length - 1 && statusText ? (
+                                                    <span className="text-xs">{statusText}</span>
+                                                ) : null}
+                                            </span>
+                                        )}
+                                        {m.content && m.meta ? (
+                                            <div className="mt-3 pt-2 border-t border-border/60 flex flex-wrap items-center gap-2">
+                                                <span className={`inline-flex items-center gap-1 text-[11px] ${(MODE_META[m.meta.mode] || MODE_META.offline).tone}`}>
+                                                    {(() => {
+                                                        const Icon = (MODE_META[m.meta.mode] || MODE_META.offline).icon;
+                                                        return <Icon className="h-3 w-3" />;
+                                                    })()}
+                                                    {m.meta.mode_label || (MODE_META[m.meta.mode] || MODE_META.offline).label}
+                                                </span>
+                                                {m.meta.learned ? (
+                                                    <span className="text-[11px] text-muted-foreground">
+                                                        · saved to my knowledge base
+                                                    </span>
+                                                ) : null}
+                                                {m.meta.confidence != null ? (
+                                                    <span className="text-[11px] text-muted-foreground">
+                                                        · confidence {Math.round((m.meta.confidence || 0) * 100)}%
+                                                    </span>
+                                                ) : null}
+                                                {m.meta.learned_id ? (
+                                                    <span className="ml-auto inline-flex items-center gap-1">
+                                                        <button
+                                                            onClick={() => rateAnswer(m.meta.learned_id, true)}
+                                                            className={`p-1 rounded hover:bg-secondary ${feedbackGiven[m.meta.learned_id] === true
+                                                                ? "text-emerald-500" : "text-muted-foreground"}`}
+                                                            title="This answer was correct and helpful"
+                                                        >
+                                                            <ThumbsUp className="h-3.5 w-3.5" />
+                                                        </button>
+                                                        <button
+                                                            onClick={() => rateAnswer(m.meta.learned_id, false)}
+                                                            className={`p-1 rounded hover:bg-secondary ${feedbackGiven[m.meta.learned_id] === false
+                                                                ? "text-destructive" : "text-muted-foreground"}`}
+                                                            title="This answer was wrong or unhelpful"
+                                                        >
+                                                            <ThumbsDown className="h-3.5 w-3.5" />
+                                                        </button>
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                        ) : null}
+
+                                        {m.content && m.meta?.sources?.length ? (
+                                            <div className="mt-2 flex flex-wrap gap-2">
+                                                {m.meta.sources.slice(0, 4).map((src, idx) => (
+                                                    <a
+                                                        key={`${src.url}-${idx}`}
+                                                        href={src.url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="inline-flex items-center gap-1 text-[11px] rounded-full border border-border px-2 py-0.5 hover:bg-secondary max-w-[240px]"
+                                                        title={src.url}
+                                                    >
+                                                        <Globe className="h-3 w-3 shrink-0 text-sky-500" />
+                                                        <span className="truncate">{src.title || src.url}</span>
+                                                    </a>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                    </>
                                 )}
                             </div>
                         </div>
@@ -723,6 +871,13 @@ export default function AITutor() {
                     </div>
                 </div>
             </div>
+
+            {/* GC AI Brain: see what GC AI learned, and teach it new facts */}
+            <AIKnowledgePanel
+                open={brainOpen}
+                onClose={() => setBrainOpen(false)}
+            />
+
         </div>
     );
 }
