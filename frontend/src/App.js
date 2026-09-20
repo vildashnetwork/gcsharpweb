@@ -141,7 +141,8 @@ import PublicPapers from "@/pages/PublicPapers";
 import VideoLibrary from "./pages/VideoLibrary";
 import SearchPage from "./pages/SearchPage";
 import { Loader2 } from "lucide-react";
-
+import StudyGroups from "./pages/StudyGroups";
+// 
 function FullLoader() {
     return (
         <div className="min-h-screen flex items-center justify-center bg-background">
@@ -263,6 +264,17 @@ function AppRouter() {
                     </Protected>
                 }
             />
+
+            <Route
+                path="/groups"
+                element={
+                    <Protected title="StudyGroups">
+                        <StudyGroups />
+                    </Protected>
+                }
+            />
+
+
 
             <Route
                 path="/study"
