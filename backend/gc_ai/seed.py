@@ -23,6 +23,8 @@ INTENT_EXAMPLES: Dict[str, List[str]] = {
     "farewell": [
         "bye", "goodbye", "see you later", "talk to you tomorrow",
         "i am leaving now", "thanks bye", "catch you later", "good night",
+        "goodbye and good luck", "bye bye, see you soon",
+        "off to bed now", "cheers, see you",
     ],
     "thanks": [
         "thanks", "thank you", "thank you so much", "thanks a lot",
@@ -139,6 +141,15 @@ INTENT_EXAMPLES.update({
         "what is the capital of cameroon", "who discovered penicillin",
         "how do plants grow", "why is the sky blue",
         "what is climate change", "tell me about the industrial revolution",
+        "list eight characteristics common to insects",
+        "state five reasons why farmers should plant legumes",
+        "outline the stages of mitosis",
+        "describe the process of digestion in humans",
+        "explain how inflation affects the economy",
+        "what are the functions of the human skeleton",
+        "state the main causes of the first world war",
+        "define osmosis and give an example",
+        "list the qualities of a good leader",
     ],
 })
 

@@ -2468,6 +2468,57 @@ async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retr
     )
     raise ValueError(f"Could not get valid JSON with key '{required_key}' from AI")
 
+
+def _board_lines(items) -> list:
+    """Normalise whiteboard lines (strings only, trimmed, capped)."""
+    lines = []
+    for item in items or []:
+        text = str(item).strip() if item is not None else ""
+        if text:
+            lines.append(text[:300])
+    return lines[:12]
+
+
+def _fallback_video_scenes(question: str, answer: str) -> list:
+    """Build whiteboard video scenes locally from a GC AI answer.
+
+    Keyless fallback: turns the engine's markdown answer into the scene
+    schema the player expects ({heading, board[], narration, audio}) so
+    'Generate Video' still works when no LLM API key is configured.
+    """
+    q = (question or "").strip() or "Exam question walkthrough"
+    body = (answer or "").strip()
+    parts = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    if not parts:
+        parts = [q]
+
+    scenes = [{
+        "heading": "The Question",
+        "board": _board_lines([q]) or [q[:300]],
+        "narration": f"Here is the question we are going to work through. {q}"[:900],
+        "audio": "",
+    }]
+    for i, part in enumerate(parts[:6]):
+        lines = [ln for ln in part.splitlines() if ln.strip()]
+        heading = f"Step {i + 1}"
+        if lines and len(lines[0].lstrip("# ").strip()) <= 60:
+            heading = lines[0].lstrip("# ").strip()
+        board = _board_lines(lines) or [part[:300]]
+        scenes.append({
+            "heading": heading,
+            "board": board,
+            "narration": part[:900],
+            "audio": "",
+        })
+    scenes.append({
+        "heading": "Wrap-up",
+        "board": ["Review each step, then attempt a similar question on your own."],
+        "narration": ("That completes this walkthrough. Go back over the board lines "
+                      "and practise a similar question to make it stick."),
+        "audio": "",
+    })
+    return scenes
+
 # ============================================================
 # Papers Module
 # ============================================================
@@ -2626,27 +2677,57 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
         "Create 4 to 6 scenes ending with the final answer. Narration must be natural spoken English. Return ONLY JSON."
     )
     chat = _new_chat(f"vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
-    resp = await chat.send_message(prompt)
+
+    scenes: list = []
+    title = p["title"]
+    question_text = ""
     try:
+        resp = await chat.send_message(prompt)
         parsed = _clean_json(resp)
         raw_scenes = parsed.get("scenes", [])
         if not raw_scenes:
             raise ValueError("empty scenes")
-    except Exception:
-        logger.error(f"Video parse fail: {resp[:200]}")
-        raise HTTPException(status_code=502, detail="Couldn't build a video solution right now. Please try again shortly.")
+        for i, sc in enumerate(raw_scenes[:6]):
+            narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+            raw_board = sc.get("board", []) or []
+            board = raw_board if isinstance(raw_board, list) else [str(raw_board)]
+            scenes.append({
+                "heading": sc.get("heading", f"Step {i+1}"),
+                "board": board,
+                "narration": narration,
+                "audio": "",
+            })
+        title = parsed.get("title") or p["title"]
+        question_text = parsed.get("question", "")
+    except Exception as exc:
+        logger.warning(f"LLM video generation unavailable for paper {paper_id}: {exc}")
 
-    scenes = []
-    for i, sc in enumerate(raw_scenes[:6]):
-        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
-        scenes.append({
-            "heading": sc.get("heading", f"Step {i+1}"),
-            "board": sc.get("board", []),
-            "narration": narration,
-            "audio": "",
-        })
-    doc = {"paper_id": paper_id, "title": parsed.get("title", p["title"]),
-           "question": parsed.get("question", ""), "scenes": scenes,
+    if not scenes:
+        # Keyless fallback: let the local GC AI engine work the paper and
+        # turn its answer into whiteboard scenes instead of failing.
+        try:
+            engine = await _ensure_gc_ai_engine()
+            if engine is None:
+                raise RuntimeError("GC AI engine unavailable")
+            ai_prompt = (
+                f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+                f"PAPER TEXT:\n{text[:4000]}\n\n"
+                "Work the FIRST substantial question in clear numbered steps, "
+                "ending with the final answer."
+            )
+            ai_answer = await engine.answer(ai_prompt, subject=p.get("subject") or "General")
+            question_text = (
+                f"First substantial question - {p['title']} "
+                f"({p['year']} Paper {p['paper_number']})"
+            )
+            scenes = _fallback_video_scenes(question_text, ai_answer.text)
+            title = f"{p['title']} - video solution"
+        except Exception as exc:
+            logger.error(f"GC AI fallback video failed for paper {paper_id}: {exc}")
+            raise HTTPException(status_code=502, detail="Couldn't build a video solution right now. Please try again shortly.")
+
+    doc = {"paper_id": paper_id, "title": title,
+           "question": question_text, "scenes": scenes,
            "created_at": datetime.now(timezone.utc).isoformat()}
     await db.paper_video_cache.insert_one(dict(doc))
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
@@ -3284,28 +3365,45 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
 
     chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
 
+    scenes: list = []
+    title = "Solution for highlighted text"
+    question_text = req.text[:200]
     try:
         parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
         raw_scenes = parsed["scenes"]
+        for i, sc in enumerate(raw_scenes[:8]):
+            narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+            raw_board = sc.get("board", []) or []
+            board = raw_board if isinstance(raw_board, list) else [str(raw_board)]
+            scenes.append({
+                "heading": sc.get("heading", f"Step {i+1}"),
+                "board": board,
+                "narration": narration,
+                "audio": "",
+            })
+        title = parsed.get("title") or title
+        question_text = parsed.get("question") or question_text
     except Exception as e:
-        logger.error(f"Highlight video generation failed for paper {paper_id}: {e}")
-        raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
+        logger.warning(f"Highlight video LLM unavailable for paper {paper_id}: {e}")
 
-    scenes = []
-    for i, sc in enumerate(raw_scenes[:8]):
-        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
-        scenes.append({
-            "heading": sc.get("heading", f"Step {i+1}"),
-            "board": sc.get("board", []),
-            "narration": narration,
-            "audio": "",
-        })
+    if not scenes:
+        # Keyless fallback: answer the highlighted text with the local GC AI
+        # engine and build the scenes ourselves (no API key required).
+        try:
+            engine = await _ensure_gc_ai_engine()
+            if engine is None:
+                raise RuntimeError("GC AI engine unavailable")
+            ai_answer = await engine.answer(req.text, subject=p.get("subject") or "General")
+            scenes = _fallback_video_scenes(req.text[:400], ai_answer.text)
+        except Exception as exc:
+            logger.error(f"GC AI highlight video fallback failed for paper {paper_id}: {exc}")
+            raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
 
     doc = {
         "cache_key": cache_key,
         "paper_id": paper_id,
-        "title": parsed.get("title", f"Solution for highlighted text"),
-        "question": parsed.get("question", req.text[:200]),
+        "title": title,
+        "question": question_text,
         "scenes": scenes,
         "created_at": datetime.now(timezone.utc).isoformat()
     }

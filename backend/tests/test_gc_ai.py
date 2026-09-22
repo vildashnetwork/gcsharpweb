@@ -11,7 +11,10 @@ if str(BACKEND_DIR) not in sys.path:
 
 from gc_ai import text as nlp                      # noqa: E402
 from gc_ai import seed as seed_data                # noqa: E402
-from gc_ai.engine import GCAIEngine, _safe_eval, _chunk_text   # noqa: E402
+from gc_ai.engine import (                                      # noqa: E402
+    GCAIEngine, _safe_eval, _chunk_text,
+    _is_real_smalltalk, _forced_smalltalk_intent,
+)
 from gc_ai.knowledge import KnowledgeBase          # noqa: E402
 
 
@@ -86,6 +89,31 @@ class TestIntentClassifier:
         label, confidence = engine.classifier.predict(phrase)
         assert label == expected
         assert confidence > 0.5
+
+    @pytest.mark.parametrize("phrase", [
+        "bye",
+        "goodbye and good luck",
+        "ok bye, see you tomorrow",
+        "hello",
+    ])
+    def test_real_smalltalk_still_routed_to_smalltalk(self, engine, phrase):
+        label, _confidence = engine.classifier.predict(phrase)
+        assert label in {"greeting", "farewell", "thanks"}
+
+    @pytest.mark.parametrize("phrase", [
+        "(a) (i) List eight (8) characteristics common to insects.",
+        "State five reasons why farmers should plant legumes.",
+        "Outline the stages of mitosis and describe each one.",
+        "With the aid of a diagram, describe the digestive system.",
+    ])
+    def test_exam_style_questions_never_route_to_smalltalk(self, engine, phrase):
+        label, _confidence = engine.classifier.predict(phrase)
+        assert label not in {"greeting", "farewell", "thanks", "identity"}
+
+    def test_out_of_vocabulary_text_gives_general_with_zero_confidence(self, engine):
+        label, confidence = engine.classifier.predict("zzqwx sploinb frumplekit")
+        assert label == "general_question"
+        assert confidence == 0.0
 
 
 # ---------------------------------------------------------- Knowledge base
@@ -201,6 +229,45 @@ class TestEngineOffline:
         assert health["ready"] is True
         assert health["independent_of_any_single_api"] is True
         assert health["knowledge_memories"] >= 15
+
+
+class TestExamQuestionSafety:
+    """Regression: exam questions must never be answered with smalltalk."""
+
+    def test_insect_exam_question_gets_substantive_answer(self, engine):
+        answer = run(engine.answer(
+            "(a) (i) List eight (8) characteristics common to insects.",
+            use_llm=False, use_web=False,
+        ))
+        assert answer.text.strip()
+        assert "Goodbye" not in answer.text
+        assert answer.intent not in {"greeting", "farewell", "thanks"}
+
+    def test_real_farewell_still_gets_the_farewell_reply(self, engine):
+        answer = run(engine.answer("ok bye, see you tomorrow", use_llm=False, use_web=False))
+        assert answer.intent == "farewell"
+        assert "Goodbye" in answer.text
+
+    def test_real_greeting_still_gets_the_greeting_reply(self, engine):
+        answer = run(engine.answer("hi there", use_llm=False, use_web=False))
+        assert answer.intent == "greeting"
+        assert "Hello" in answer.text
+
+    def test_smalltalk_gate_helpers(self):
+        assert _is_real_smalltalk("bye") is True
+        assert _is_real_smalltalk("thanks a lot") is True
+        assert _is_real_smalltalk(
+            "(a) (i) List eight characteristics common to insects."
+        ) is False
+        assert _forced_smalltalk_intent("ok bye, see you tomorrow") == "farewell"
+        assert _forced_smalltalk_intent("goodbye and good luck") == "farewell"
+        assert _forced_smalltalk_intent("take care") == "farewell"
+        assert _forced_smalltalk_intent("thanks a lot") == "thanks"
+        assert _forced_smalltalk_intent("good morning") == "greeting"
+        assert _forced_smalltalk_intent(
+            "list eight characteristics common to insects"
+        ) is None
+        assert _forced_smalltalk_intent("what is climate change") is None
 
 
 class TestHelpers:

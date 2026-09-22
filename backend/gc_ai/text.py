@@ -477,23 +477,40 @@ def nb_decision(
 
     Returns (label, confidence). Confidence is a softmax over the log
     likelihoods, which behaves well enough for routing decisions.
+
+    Smoothing fix: the Laplace denominator is the GLOBAL vocabulary size
+    for every class, so the penalty for a token a class has never seen is
+    identical everywhere. The old per-class denominator
+    (token_total + vocab_size) made tiny classes such as "farewell" (a
+    handful of short utterances) look more likely than large classes for
+    any question built from vocabulary they had never observed - e.g.
+    "(a) (i) List eight (8) characteristics common to insects." was
+    routed to the goodbye intent. If no token matches any class at all,
+    the caller gets ("general_question", 0.0) instead of a confident
+    guess about pure out-of-vocabulary text.
     """
     total_docs = max(sum(class_counts.values()), 1)
     vocab_size = max(vocab_size, 1)
     scores: Dict[str, float] = {}
+    matched: Dict[str, int] = {}
     for label, doc_count in class_counts.items():
         log_prob = math.log(doc_count / total_docs)
-        token_total = sum(term_counts[label].values())
-        denom = token_total + vocab_size
+        matched_count = 0
         for term, count in features.items():
-            log_prob += count * math.log((term_counts[label].get(term, 0) + 1) / denom)
+            seen = term_counts[label].get(term, 0)
+            if seen:
+                matched_count += count
+            log_prob += count * math.log((seen + 1) / vocab_size)
         scores[label] = log_prob
+        matched[label] = matched_count
 
-    best_label = "general_question"
-    best_score = float("-inf")
-    for label, value in scores.items():
-        if value > best_score:
-            best_label, best_score = label, value
+    if not scores:
+        return "general_question", 0.0
+    best_label = max(scores, key=lambda k: scores[k])
+    if not matched.get(best_label):
+        # Pure out-of-vocabulary question: no evidence anywhere.
+        return "general_question", 0.0
+    best_score = scores[best_label]
     exp_sum = sum(math.exp(v - best_score) for v in scores.values())
     confidence = (1.0 / exp_sum) if exp_sum else 0.0
     return best_label, round(min(max(confidence, 0.0), 0.99), 3)

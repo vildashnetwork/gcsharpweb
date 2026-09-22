@@ -54,6 +54,91 @@ MODE_LABELS = {
     OFFLINE_MODE: "GC AI offline mode",
 }
 
+# Bump when classifier training/smoothing semantics change: snapshots that
+# carry an older (or missing) version are discarded on load instead of being
+# restored, so MongoDB cannot resurrect poisoned smalltalk training data.
+CLASSIFIER_STATE_VERSION = 2
+
+# Canned replies that must never swallow a real exam question.
+_SMALLTALK_INTENTS = {"greeting", "farewell", "thanks"}
+
+# "(a)", "(i)", "(8)", "list ...", "state ...", "outline ..." - the shape of
+# past-paper questions, used to keep them out of the smalltalk shortcuts.
+_EXAM_STYLE_RE = re.compile(
+    r"\(\s*[a-e]\s*\)"
+    r"|\(\s*(?:i{1,3}|iv|v|vi{1,3}|ix|x)\s*\)"
+    r"|\(\s*\d+\s*\)"
+    r"|\b(?:list|state|outline|define|describe|discuss|calculate|derive|mention)\b"
+)
+
+
+def _is_real_smalltalk(question: str) -> bool:
+    """True only for genuine chit-chat, never for exam-style questions.
+
+    The naive-Bayes router can still assign a tiny smalltalk class to an
+    unseen question, so this gate is the second line of defence: a canned
+    greeting/farewell/thanks is only allowed for short utterances that
+    carry no exam-paper markers.
+    """
+    norm = nlp.normalize(question or "").strip()
+    if not norm:
+        return False
+    if _EXAM_STYLE_RE.search(norm):
+        return False
+    if len(norm.split()) > 8:
+        return False
+    return True
+
+
+_SMALLTALK_FILLER = {
+    "a", "the", "and", "for", "to", "so", "very", "much", "lot", "again",
+    "soon", "all", "luck", "ok", "okay", "am", "is", "are", "i", "my", "me",
+    "it", "you", "your", "we", "us", "that", "was", "there", "now", "then",
+    "gc", "ai", "bot", "hope", "doing", "well", "see", "ya", "take", "off",
+    "sleep", "bed",
+}
+_SMALLTALK_GREETING = {
+    "hi", "hello", "hey", "yo", "morning", "afternoon", "evening", "greetings", "good",
+}
+_SMALLTALK_FAREWELL = {
+    "bye", "goodbye", "goodnight", "night", "leaving", "catch", "talk",
+    "adios", "cheerio", "ciao", "peace", "care", "off", "bed", "sleep",
+}
+_SMALLTALK_THANKS = {
+    "thanks", "thank", "thx", "merci", "appreciate", "helpful", "welcome",
+}
+
+
+def _forced_smalltalk_intent(question: str) -> Optional[str]:
+    """Deterministic chit-chat detector for pure greetings/farewells/thanks.
+
+    Returns an intent only when EVERY word of a short, marker-free utterance
+    is smalltalk or filler. Real questions ("list eight characteristics...,
+    bye the way") never match because of the exam markers or an out-of-lexicon
+    word, so this can only reinforce the classifier, never hijack it.
+    """
+    norm = nlp.normalize(question or "").strip()
+    if not norm:
+        return None
+    if _EXAM_STYLE_RE.search(norm):
+        return None
+    # Letters-only tokens: normalize() may keep punctuation ("bye," etc.),
+    # so whitespace splitting would leave stray tokens outside the lexicon.
+    words = re.findall(r"[a-z]+", norm)
+    if not words or len(words) > 6:
+        return None
+    word_set = set(words)
+    lexicon = _SMALLTALK_FILLER | _SMALLTALK_GREETING | _SMALLTALK_FAREWELL | _SMALLTALK_THANKS
+    if not word_set <= lexicon:
+        return None
+    if word_set & _SMALLTALK_FAREWELL:
+        return "farewell"
+    if word_set & _SMALLTALK_THANKS:
+        return "thanks"
+    if word_set & _SMALLTALK_GREETING:
+        return "greeting"
+    return None
+
 
 @dataclass
 class AIAnswer:
@@ -133,11 +218,18 @@ class GCAIEngine:
             self.classifier.train(seed_data.INTENT_EXAMPLES)
             loaded = await self.knowledge.load()
             snapshot = await self.knowledge.load_state("intent_classifier")
-            if snapshot:
+            snapshot_version = snapshot.get("version") if isinstance(snapshot, dict) else None
+            if snapshot and snapshot_version == CLASSIFIER_STATE_VERSION:
                 try:
                     self.classifier.load_state(snapshot)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning(f"GC AI could not restore classifier snapshot: {exc}")
+            elif snapshot:
+                logger.warning(
+                    "GC AI discarded a stale intent-classifier snapshot "
+                    f"(version {snapshot_version!r}, need {CLASSIFIER_STATE_VERSION}); "
+                    "retraining from the seed corpus."
+                )
 
             seeded = 0
             if loaded == 0:
@@ -168,7 +260,10 @@ class GCAIEngine:
     async def save_snapshot(self) -> None:
         """Persist the learned classifier state (called after teaching)."""
         try:
-            await self.knowledge.save_state("intent_classifier", self.classifier.state())
+            state = self.classifier.state()
+            if isinstance(state, dict):
+                state = {**state, "version": CLASSIFIER_STATE_VERSION}
+            await self.knowledge.save_state("intent_classifier", state)
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug(f"GC AI snapshot failed: {exc}")
 
@@ -181,6 +276,15 @@ class GCAIEngine:
 
     def _local_answer(self, question: str, intent: str, subject: str) -> Optional[str]:
         norm = nlp.normalize(question)
+
+        if intent in _SMALLTALK_INTENTS and not _is_real_smalltalk(question):
+            # Exam-style question misrouted to a smalltalk class - never
+            # answer it with a canned greeting/farewell/thanks.
+            logger.debug(
+                f"GC AI smalltalk gate: ignoring {intent} intent for {question[:80]!r}"
+            )
+            return None
+
         handler = {
             "greeting": self._reply_greeting,
             "farewell": self._reply_farewell,
@@ -485,6 +589,11 @@ class GCAIEngine:
         yield {"status": "Understanding your question"}
         effective_subject = subject if subject and subject != "General" else nlp.detect_subject(q)
         intent, intent_conf = self.classifier.predict(q)
+        forced_intent = _forced_smalltalk_intent(q)
+        if forced_intent:
+            # Deterministic chit-chat: never let training drift or unseen
+            # vocabulary send a pure greeting/farewell/thanks elsewhere.
+            intent, intent_conf = forced_intent, 0.99
         keywords = nlp.keywords(q, 8)
 
         text: Optional[str] = None
