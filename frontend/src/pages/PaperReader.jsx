@@ -13,7 +13,11 @@ import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
 import Markdown from "../components/Markdown";
 import {
     ArrowLeft, Loader2, Sparkles, Bot,
-    Bookmark, BookmarkCheck, FileText, Film, ListChecks, X, Clock, ChevronDown,
+    Bookmark, BookmarkCheck,
+    FileText, Film,
+    ListChecks,
+    X, Clock,
+    ChevronDown,
     Flame, Trophy, Target,
 } from "lucide-react";
 import { toast } from "sonner";

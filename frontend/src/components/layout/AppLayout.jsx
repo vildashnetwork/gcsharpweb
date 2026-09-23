@@ -596,7 +596,7 @@ export default function AppLayout({ children }) {
                     <p className="text-xs text-muted-foreground mt-0.5">Sharpening Potential</p>
                 </div>
             </div>
-            <nav className="flex-1 px-4 space-y-1">
+            <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-1 scrollbar-thin">
                 {NAV.map((item) => {
                     const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
                     return (
