@@ -2733,7 +2733,7 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
 def _strip_reasoning_preamble(text: str) -> str:
-    match = re.search(r'##\s*(Given|Solution)', text)
+    match = re.search(r'##\s*(Given|Solution|Formula|Key Formula)', text, re.IGNORECASE)
     if match and match.start() > 0:
         return text[match.start():].strip()
     return text
@@ -2742,24 +2742,36 @@ def _strip_reasoning_preamble(text: str) -> str:
 async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user)):
     p = await db.papers.find_one({"paper_id": req.paper_id}, {"_id": 0})
     subject = p["subject"] if p else "General"
+    level = p.get("level", "") if p else ""
     system = (
-        f"You are GC AI, an expert {subject} exam tutor writing a final worked solution for a student. "
-        "CRITICAL: Do NOT show your internal reasoning process. Never write phrases like "
-        "'We are given', 'We need to find', 'Let's define', 'Let's assume', or any narration of "
-        "how you are thinking through the problem. Go straight to the structured solution as if "
-        "writing model answers for an exam mark scheme.\n\n"
-        "Format your answer using these markdown sections:\n"
+        f"You are GC AI, a senior expert {subject} examination tutor and chief examiner writing an exhaustive, "
+        "complete step-by-step model worked solution for a student.\n\n"
+        "MANDATORY REQUIREMENTS:\n"
+        "1. Detail every single given parameter, known variable, initial condition, or constraint explicitly under '## Given'.\n"
+        "2. State any relevant formulas, laws, theorems, definitions, or principles used before applying them.\n"
+        "3. Provide full, comprehensive, step-by-step working under '## Solution' without skipping ANY intermediate algebraic, arithmetic, or logical steps. Every numbered step (1., 2., 3., ...) must clearly describe what is being calculated and show the full substitution and simplification.\n"
+        "4. Always format inline math using $...$ and display/block equations using $$...$$.\n"
+        "5. Under '## Answer', clearly state the final result with appropriate units, simplified form, or boxed symbolic expression.\n"
+        "6. Do NOT show internal reasoning narration (such as 'Let's see', 'I will now', 'We are given', etc.). Go straight into the markdown sections.\n\n"
+        "Format your answer strictly with these markdown sections:\n"
         "## Given\n"
-        "A short bullet list of the known quantities from the question.\n\n"
+        "- Bullet points of all given values, quantities, symbols, and parameters with their units.\n\n"
+        "## Formulae & Principles\n"
+        "- The governing formula(s), equation(s), or theorem(s) to be used.\n\n"
         "## Solution\n"
-        "Clearly numbered steps (1., 2., 3. ...), each showing the working, not the thought process. "
-        "Use $ ... $ for inline math and $$ ... $$ for standalone equations.\n\n"
+        "1. **Step 1 - [Description]:** Full working showing formula substitution and computation.\n"
+        "2. **Step 2 - [Description]:** Intermediate algebraic steps and derivations without omissions.\n"
+        "3. ...continue until complete.\n\n"
         "## Answer\n"
-        "The final numeric or symbolic result, stated in one line.\n\n"
-        "Be concise. Do not restate the question. Do not apologize or hedge."
+        "**Final Answer:** State the clear, final result with units."
     )
     chat = _new_chat(f"ask_{uuid.uuid4().hex}", system, subject=subject)
-    resp = await chat.send_message(f"Question:\n\n{req.question}")
+    prompt = (
+        f"Subject: {subject} ({level})\n\n"
+        f"Question:\n{req.question}\n\n"
+        "Provide the complete, exhaustive step-by-step worked solution detailing all given parameters, intermediate steps, and the final answer."
+    )
+    resp = await chat.send_message(prompt)
     resp = _strip_reasoning_preamble(resp)
     return {"answer": resp}
 

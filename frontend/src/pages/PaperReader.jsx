@@ -257,12 +257,13 @@ function preprocessAIResponse(text) {
     });
 
     // 6. Format section headings
-    processed = processed.replace(/\n*Given\n*/gi, '\n\n## Given\n\n');
-    processed = processed.replace(/\n*Solution\n*/gi, '\n\n## Solution\n\n');
-    processed = processed.replace(/\n*Answer\n*/gi, '\n\n## Answer\n\n');
+    processed = processed.replace(/(?:^|\n+)##?\s*Given\b:?/gi, '\n\n## Given\n\n');
+    processed = processed.replace(/(?:^|\n+)##?\s*Formulae?(?:\s*(?:&|and)\s*Principles?)?:?/gi, '\n\n## Formulae & Principles\n\n');
+    processed = processed.replace(/(?:^|\n+)##?\s*Solution\b:?/gi, '\n\n## Solution\n\n');
+    processed = processed.replace(/(?:^|\n+)##?\s*Answer\b:?/gi, '\n\n## Answer\n\n');
 
-    // 7. Format numbered steps
-    processed = processed.replace(/^(\d+)\.\s+/gm, '**Step $1:** ');
+    // 7. Format numbered steps (prevent double "**Step X:**" if already formatted)
+    processed = processed.replace(/^(\d+)\.\s+(?!\*\*Step\s+\d+:)/gm, '**Step $1:** ');
 
     // 8. Format sub-steps
     processed = processed.replace(/^([a-z]\)\s+)/gm, '**$1** ');
