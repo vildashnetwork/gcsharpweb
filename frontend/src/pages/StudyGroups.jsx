@@ -7,12 +7,13 @@ import { API } from "@/lib/api";
 import { groupSocketUrl, voiceNoteUrl } from "@/lib/realtime";
 import { useAuth } from "@/context/AuthContext";
 import useVoiceRecorder from "@/hooks/useVoiceRecorder";
+import GroupBrowser from "@/components/studygroup/GroupBrowser";
 import GroupMessage from "@/components/studygroup/GroupMessage";
 import PaperPicker from "@/components/studygroup/PaperPicker";
 import MembersPanel from "@/components/studygroup/MembersPanel";
 import { toast } from "sonner";
 import {
-    ArrowLeft, Plus, Send, Paperclip, Mic, Pause, Circle,
+    ArrowLeft, Send, Paperclip, Mic, Pause, Circle,
     MessageSquare, Users, FileText, Brain, Loader2, X,
 } from "lucide-react";
 
@@ -27,24 +28,6 @@ function LoadingScreen({ text }) {
         <div className="flex flex-col items-center justify-center gap-3 py-24 text-muted-foreground">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
             <p className="text-sm">{text || "Loading..."}</p>
-        </div>
-    );
-}
-
-function EmptyState({ onJoin }) {
-    return (
-        <div className="flex flex-col items-center justify-center gap-6 py-16 text-muted-foreground">
-            <MessageSquare className="h-10 w-10 text-primary/30" />
-            <div className="text-center">
-                <h3 className="text-base font-semibold text-foreground mb-1">No group selected</h3>
-                <p className="text-sm">Join a study group to chat with classmates and get AI help.</p>
-            </div>
-            <button
-                onClick={onJoin}
-                className="inline-flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-                <Plus className="h-4 w-4" /> Join a study group
-            </button>
         </div>
     );
 }
@@ -188,7 +171,9 @@ export default memo(function StudyGroups() {
     // -- Data fetching --------------------------------------------------
 
     const fetchGroup = useCallback(async () => {
-        if (!groupId || groupId === "_none") return;
+        // "create" is the browser route with the form open - there is no group
+        // to load, and asking the API for it would 404 and bounce us home.
+        if (!groupId || groupId === "_none" || groupId === "create") return;
         setLoading(true);
         try {
             const res = await fetch(API + "/groups/" + groupId, { credentials: "include" });
@@ -212,7 +197,7 @@ export default memo(function StudyGroups() {
     }, [groupId, navigate]);
 
     const fetchMessages = useCallback(async (beforeSeq) => {
-        if (!groupId) return;
+        if (!groupId || groupId === "create") return;
         try {
             const url = API + "/groups/" + groupId + "/messages" + (beforeSeq != null ? "?before_seq=" + beforeSeq : "");
             const res = await fetch(url, { credentials: "include" });
@@ -391,7 +376,7 @@ export default memo(function StudyGroups() {
     // -- Effects ----------------------------------------------------------
 
     useEffect(() => {
-        if (groupId && groupId !== "_none") {
+        if (groupId && groupId !== "_none" && groupId !== "create") {
             fetchGroup();
             fetchMessages();
         } else {
@@ -504,21 +489,10 @@ export default memo(function StudyGroups() {
 
     // -- Early returns --------------------------------------------------
 
-    if (!groupId || groupId === "_none") {
-        return (
-            <div className="flex flex-col h-full bg-background">
-                <header className="flex items-center gap-3 border-b border-border bg-card px-4 py-3 shrink-0">
-                    <h2 className="text-sm font-semibold">Study Groups</h2>
-                    <button
-                        onClick={() => navigate("/groups/create", { replace: true })}
-                        className="ml-auto inline-flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-                    >
-                        <Plus className="h-3.5 w-3.5" /> New group
-                    </button>
-                </header>
-                <EmptyState onJoin={() => navigate("/groups/create", { replace: true })} />
-            </div>
-        );
+    // /groups and /groups/create are the group browser (your groups, discovery
+    // and the create form). The chat itself only renders for a real group id.
+    if (!groupId || groupId === "_none" || groupId === "create") {
+        return <GroupBrowser createMode={groupId === "create"} />;
     }
 
     if (loading || !loaded) {

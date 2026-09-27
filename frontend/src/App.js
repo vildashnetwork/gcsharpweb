@@ -265,12 +265,35 @@ function AppRouter() {
                 }
             />
 
+            {/* Study groups. The browser lives at /groups, the create form at
+                /groups/create and the chat at /groups/:groupId. StudyGroups
+                navigates to both sub-paths (and the backend links every group
+                notification to /groups/<id>), so without these routes the "*"
+                catch-all below bounced them straight back to the home page. */}
             <Route
                 path="/groups"
                 element={
-                    // <Protected title="StudyGroups">
-                    <StudyGroups />
-                    // </Protected>
+                    <Protected title="Study Groups">
+                        <StudyGroups />
+                    </Protected>
+                }
+            />
+
+            <Route
+                path="/groups/create"
+                element={
+                    <Protected title="New Study Group">
+                        <StudyGroups />
+                    </Protected>
+                }
+            />
+
+            <Route
+                path="/groups/:groupId"
+                element={
+                    <Protected title="Study Group Chat">
+                        <StudyGroups />
+                    </Protected>
                 }
             />
 
