@@ -439,3 +439,43 @@ h4,
         padding: 0.5rem;
     }
 }
+
+/* ---------------------------------------------------------------
+   Scroll helpers (sidebar / mobile drawers / horizontal scrollers)
+   Referenced across the app as `scrollbar-thin` / `scrollbar-hide`.
+   --------------------------------------------------------------- */
+.scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+/* Momentum scrolling on iOS + stop scroll chaining to the page behind */
+.touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+/* Keeps drawer footers clear of the iOS home indicator / gesture bar */
+.safe-area-b {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.safe-area-b-sm {
+    padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
+}

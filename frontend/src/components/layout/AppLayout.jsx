@@ -563,11 +563,26 @@ export default function AppLayout({ children }) {
                 setSearchActive(false);
                 searchInputRef.current?.blur();
                 setIsDropdownOpen(false);
+                setMobileOpen(false);
             }
         };
         document.addEventListener("keydown", handleEsc);
         return () => document.removeEventListener("keydown", handleEsc);
     }, []);
+
+    // ----- Mobile drawer: close on navigation, lock page scroll while open -----
+    useEffect(() => {
+        setMobileOpen(false);
+    }, [location.pathname]);
+
+    useEffect(() => {
+        if (!mobileOpen) return undefined;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [mobileOpen]);
 
     const handleSearchFocus = () => setSearchActive(true);
     const handleSearchClose = () => {
@@ -586,8 +601,8 @@ export default function AppLayout({ children }) {
 
     // ----- Sidebar content (unchanged) -----
     const SidebarContent = () => (
-        <div className="flex flex-col h-full bg-sidebar">
-            <div className="p-6 flex items-center gap-3">
+        <div className="flex flex-col h-full min-h-0 bg-sidebar">
+            <div className="p-6 flex items-center gap-3 shrink-0">
                 <div className="h-10 w-10 rounded-xl bg-primary flex items-center justify-center shadow-glow">
                     <GraduationCap className="h-5 w-5 text-white" />
                 </div>
@@ -596,7 +611,7 @@ export default function AppLayout({ children }) {
                     <p className="text-xs text-muted-foreground mt-0.5">Sharpening Potential</p>
                 </div>
             </div>
-            <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-1 scrollbar-thin">
+            <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-1 scrollbar-thin touch-scroll">
                 {NAV.map((item) => {
                     const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
                     return (
@@ -612,7 +627,7 @@ export default function AppLayout({ children }) {
                     );
                 })}
             </nav>
-            <div className="p-4 space-y-3">
+            <div className="p-4 space-y-3 shrink-0 safe-area-b">
                 <Button
                     data-testid="upload-content-btn"
                     onClick={() => navigate("/teacher")}
@@ -643,11 +658,16 @@ export default function AppLayout({ children }) {
                 <SidebarContent />
             </aside>
 
-            {/* mobile drawer */}
+            {/* mobile drawer — anchored below the top bar so it never looks
+                pinned to the top of the screen, and capped to the dynamic
+                viewport so the footer stays reachable and the list scrolls */}
             {mobileOpen && (
                 <div className="fixed inset-0 z-50 lg:hidden">
-                    <div className="absolute inset-0 bg-black/50" onClick={() => setMobileOpen(false)} />
-                    <div className="absolute left-0 top-0 h-full w-[260px] border-r border-border bg-sidebar">
+                    <div className="absolute left-0 right-0 top-16 bottom-0 bg-black/50" onClick={() => setMobileOpen(false)} />
+                    <div
+                        id="mobile-sidebar"
+                        className="absolute left-0 top-16 bottom-0 w-[260px] max-w-[85vw] border-r border-t border-border bg-sidebar max-h-[calc(100dvh-4rem)]"
+                    >
                         <SidebarContent />
                     </div>
                 </div>
@@ -660,10 +680,13 @@ export default function AppLayout({ children }) {
                         {/* Mobile menu button */}
                         <button
                             className={`lg:hidden transition-all duration-300 ${searchActive ? "opacity-0 w-0 overflow-hidden px-0" : "opacity-100"}`}
-                            onClick={() => setMobileOpen(true)}
+                            onClick={() => setMobileOpen(prev => !prev)}
+                            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+                            aria-expanded={mobileOpen}
+                            aria-controls="mobile-sidebar"
                             data-testid="mobile-menu-btn"
                         >
-                            <Menu className="h-6 w-6" />
+                            {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
                         </button>
 
                         {/* Search */}
@@ -742,8 +765,8 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* Mobile bottom tab bar — quick switch to Study Groups */}
-                <nav className="lg:hidden flex items-center gap-1 px-2 pb-1 pt-1 border-t border-border/60 bg-sidebar/90 backdrop-blur shrink-0">
+                {/* Mobile bottom tab bar — pinned to the bottom of the screen (was rendering under the header) */}
+                <nav className="lg:hidden fixed inset-x-0 bottom-0 z-40 flex items-center gap-1 px-2 pt-1 border-t border-border/60 bg-sidebar/90 backdrop-blur safe-area-b-sm">
                     {NAV.filter(item => ["dashboard", "study", "groups", "ai", "analytics"].includes(item.key)).map((item) => {
                         const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
                         const isGroups = item.key === "groups";
@@ -767,7 +790,7 @@ export default function AppLayout({ children }) {
                     })}
                 </nav>
 
-                <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-16 lg:pb-8">{children}</main>
+                <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-[calc(4.5rem_+_env(safe-area-inset-bottom))] lg:pb-8">{children}</main>
             </div>
         </div>
     );
