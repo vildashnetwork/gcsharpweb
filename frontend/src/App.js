@@ -268,9 +268,9 @@ function AppRouter() {
             <Route
                 path="/groups"
                 element={
-                    <Protected title="StudyGroups">
-                        <StudyGroups />
-                    </Protected>
+                    // <Protected title="StudyGroups">
+                    <StudyGroups />
+                    // </Protected>
                 }
             />
 
