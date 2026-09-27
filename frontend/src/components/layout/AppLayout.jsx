@@ -268,7 +268,7 @@
 
 
 // components/layout/AppLayout.jsx
-import { useState, useRef, useEffect } from "react";
+import { useCallback, useState, useRef, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useTheme } from "../../context/ThemeContext";
@@ -395,8 +395,7 @@ export default function AppLayout({ children }) {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [socket, setSocket] = useState(null);
 
-    // Study-groups unread badge state
-    const [groupUnreadMap, setGroupUnreadMap] = useState({});
+    // Study-groups unread badge state (totals come from GET /groups/summary/badges)
     const [groupMeta, setGroupMeta] = useState(null);
 
     const initials = (user?.name || "U").split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase();
@@ -413,15 +412,14 @@ export default function AppLayout({ children }) {
     };
 
     // ----- Fetch study-groups summary (unread badge) -----
-    const fetchGroupMeta = async () => {
+    const fetchGroupMeta = useCallback(async () => {
         try {
             const res = await api.get("/groups/summary/badges");
             setGroupMeta(res.data);
-            setGroupUnreadMap(res.data?.unread_by_group || {});
         } catch (err) {
             console.error("Failed to fetch group badges", err);
         }
-    };
+    }, []);
 
     // ----- Mark notification as read -----
     const markAsRead = async (notifId) => {
@@ -496,7 +494,7 @@ export default function AppLayout({ children }) {
         return () => {
             newSocket.disconnect();
         };
-    }, [user]);
+    }, [user, fetchGroupMeta]);
 
     // Fetch initial notifications when user logs in
     useEffect(() => {
@@ -504,7 +502,7 @@ export default function AppLayout({ children }) {
             fetchNotifications();
             fetchGroupMeta();
         }
-    }, [user]);
+    }, [user, fetchGroupMeta]);
 
     // Register this device for notifications that arrive while the site is closed.
     useEffect(() => {
@@ -574,6 +572,15 @@ export default function AppLayout({ children }) {
     useEffect(() => {
         setMobileOpen(false);
     }, [location.pathname]);
+
+    // Reading a group marks its messages read, so refresh the tab badge whenever
+    // the user walks away from the group screens.
+    const previousPathRef = useRef("");
+    useEffect(() => {
+        const wasInGroups = previousPathRef.current.startsWith("/groups");
+        previousPathRef.current = location.pathname;
+        if (wasInGroups && !location.pathname.startsWith("/groups")) fetchGroupMeta();
+    }, [location.pathname, fetchGroupMeta]);
 
     useEffect(() => {
         if (!mobileOpen) return undefined;
@@ -770,7 +777,11 @@ export default function AppLayout({ children }) {
                     {NAV.filter(item => ["dashboard", "study", "groups", "ai", "analytics"].includes(item.key)).map((item) => {
                         const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
                         const isGroups = item.key === "groups";
-                        const badge = isGroups && typeof groupUnreadMap === "object" ? groupUnreadMap[item.key] : null;
+                        // unread_by_group is keyed by group id, so the tab badge uses
+                        // the totals from the badge summary instead of the per-group map.
+                        const badge = isGroups
+                            ? (groupMeta?.unread || 0) + (groupMeta?.requests_waiting || 0)
+                            : null;
                         return (
                             <button
                                 key={item.key}
