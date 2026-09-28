@@ -464,7 +464,7 @@ export default function AppLayout({ children }) {
             setNotifications(prev => [data, ...prev]);
             setUnreadCount(prev => prev + 1);
 
-            // Keep the bottom-tab group unread badge fresh when a group notification arrives.
+            // Keep the sidebar group unread badge fresh when a group notification arrives.
             if (data?.type === "group_message" && data?.link?.startsWith("/groups/")) {
                 try {
                     const group_id = data.link.slice("/groups/".length).split("/")[0];
@@ -621,6 +621,11 @@ export default function AppLayout({ children }) {
             <nav className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-1 scrollbar-thin touch-scroll">
                 {NAV.map((item) => {
                     const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
+                    // Study-groups counter (unread messages + requests waiting). It lives
+                    // here because the mobile bottom tab bar was removed.
+                    const badge = item.key === "groups"
+                        ? (groupMeta?.unread || 0) + (groupMeta?.requests_waiting || 0)
+                        : 0;
                     return (
                         <button
                             key={item.key}
@@ -630,6 +635,14 @@ export default function AppLayout({ children }) {
                         >
                             <item.icon className="h-4.5 w-4.5" />
                             {item.label}
+                            {badge > 0 && (
+                                <span
+                                    data-testid={`sidebar-nav-badge-${item.key}`}
+                                    className="ml-auto min-w-5 h-5 px-1.5 rounded-full bg-destructive text-white text-[10px] leading-none flex items-center justify-center font-bold"
+                                >
+                                    {badge > 99 ? "99+" : badge}
+                                </span>
+                            )}
                         </button>
                     );
                 })}
@@ -772,36 +785,7 @@ export default function AppLayout({ children }) {
                     </div>
                 </header>
 
-                {/* Mobile bottom tab bar — pinned to the bottom of the screen (was rendering under the header) */}
-                <nav className="lg:hidden fixed inset-x-0 bottom-0 z-40 flex items-center gap-1 px-2 pt-1 border-t border-border/60 bg-sidebar/90 backdrop-blur safe-area-b-sm">
-                    {NAV.filter(item => ["dashboard", "study", "groups", "ai", "analytics"].includes(item.key)).map((item) => {
-                        const active = location.pathname === item.path || location.pathname.startsWith(item.path + "/");
-                        const isGroups = item.key === "groups";
-                        // unread_by_group is keyed by group id, so the tab badge uses
-                        // the totals from the badge summary instead of the per-group map.
-                        const badge = isGroups
-                            ? (groupMeta?.unread || 0) + (groupMeta?.requests_waiting || 0)
-                            : null;
-                        return (
-                            <button
-                                key={item.key}
-                                data-testid={`bottom-tab-${item.key}`}
-                                onClick={() => { navigate(item.path); setMobileOpen(false); }}
-                                className={`relative flex-1 flex items-center justify-center py-2 rounded-lg text-xs font-medium transition-colors ${active ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                            >
-                                <item.icon className="h-4.5 w-4.5" />
-                                <span className="ml-1.5">{item.label}</span>
-                                {isGroups && badge != null && badge > 0 && (
-                                    <span className="absolute -top-1 right-1/2 -translate-x-1/2 h-4 w-4 rounded-full bg-destructive text-white text-[9px] flex items-center justify-center font-bold">
-                                        {badge > 99 ? "99+" : badge}
-                                    </span>
-                                )}
-                            </button>
-                        );
-                    })}
-                </nav>
-
-                <main className="flex-1 p-4 sm:p-6 lg:p-8 pb-[calc(4.5rem_+_env(safe-area-inset-bottom))] lg:pb-8">{children}</main>
+                <main className="flex-1 p-4 sm:p-6 lg:p-8">{children}</main>
             </div>
         </div>
     );

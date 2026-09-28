@@ -475,7 +475,3 @@ h4,
 .safe-area-b {
     padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
-
-.safe-area-b-sm {
-    padding-bottom: max(0.25rem, env(safe-area-inset-bottom));
-}
