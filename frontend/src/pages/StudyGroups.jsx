@@ -1,12 +1,13 @@
 // pages/StudyGroups.jsx
 // WhatsApp-style study group chat with paper sharing, highlights, voice notes and GC AI.
 // Real-time delivery over WebSocket (TCP) - see backend/study_groups.py.
-import { useCallback, useEffect, useRef, useState, memo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, memo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { API } from "@/lib/api";
-import { groupSocketUrl, voiceNoteUrl } from "@/lib/realtime";
+import { authHeaders, voiceNoteUrl } from "@/lib/realtime";
 import { useAuth } from "@/context/AuthContext";
 import useVoiceRecorder from "@/hooks/useVoiceRecorder";
+import useGroupSocket from "@/hooks/useGroupSocket";
 import GroupBrowser from "@/components/studygroup/GroupBrowser";
 import GroupMessage from "@/components/studygroup/GroupMessage";
 import PaperPicker from "@/components/studygroup/PaperPicker";
@@ -14,7 +15,7 @@ import MembersPanel from "@/components/studygroup/MembersPanel";
 import { toast } from "sonner";
 import {
     ArrowLeft, Send, Paperclip, Mic, Pause, Circle,
-    MessageSquare, Users, FileText, Brain, Loader2, X,
+    MessageSquare, Users, FileText, Brain, Loader2, X, ChevronUp,
 } from "lucide-react";
 
 const QUICK_REACTIONS = ["⭐", "👍", "🔥", "😂", "😮", "✅"];
@@ -134,15 +135,22 @@ export default memo(function StudyGroups() {
     const { user } = useAuth();
     const mineId = user?.user_id;
 
+    // Only the chat route (/groups/:groupId) has a live conversation. The browser
+    // routes "/groups" and "/groups/create" must never fetch or open a socket.
+    const isChat = !!groupId && groupId !== "_none" && groupId !== "create";
+
     // Group + messages
     const [group, setGroup] = useState(null);
     const [messages, setMessages] = useState([]);
     const [loaded, setLoaded] = useState(false);
     const [loading, setLoading] = useState(false);
     const [submitting, setSubmitting] = useState(false);
-    const [onlineUsers, setOnlineUsers] = useState([]);
-    const [typingUsers, setTypingUsers] = useState([]);
     const [lastSeq, setLastSeq] = useState(null);
+    // History pagination. The API hands back one chronological page at a time
+    // (40 messages); without these the older half of a conversation never shows.
+    const [hasMoreHistory, setHasMoreHistory] = useState(false);
+    const [oldestSeq, setOldestSeq] = useState(null);
+    const [loadingOlder, setLoadingOlder] = useState(false);
 
     // AI panel
     const [showAIPanel, setShowAIPanel] = useState(false);
@@ -167,13 +175,35 @@ export default memo(function StudyGroups() {
     const voice = useVoiceRecorder();
     const scrollRef = useRef(null);
     const composerRef = useRef(null);
+    // The scrollable message list. We remember whether the reader is parked at
+    // the bottom so loading older pages never yanks the view around.
+    const chatBoxRef = useRef(null);
+    const atBottomRef = useRef(true);
+    const restoreHeightRef = useRef(null);
+    const typingStopRef = useRef(null);
+
+    // One insertion point for messages. The REST reply to our own send, the live
+    // echo of that same send over the socket, and pages of history can all carry
+    // the same message - so everything is de-duped on message_id and stored
+    // oldest -> newest, which is the order the API already returns.
+    const appendMessage = useCallback((msg) => {
+        if (!msg?.message_id) return;
+        setMessages((prev) => (
+            prev.some((m) => m.message_id === msg.message_id)
+                ? prev
+                : [...prev, msg]
+        ));
+        if (typeof msg.seq === "number") {
+            setLastSeq((prev) => Math.max(prev || 0, msg.seq));
+        }
+    }, []);
 
     // -- Data fetching --------------------------------------------------
 
     const fetchGroup = useCallback(async () => {
         // "create" is the browser route with the form open - there is no group
         // to load, and asking the API for it would 404 and bounce us home.
-        if (!groupId || groupId === "_none" || groupId === "create") return;
+        if (!isChat) return;
         setLoading(true);
         try {
             const res = await fetch(API + "/groups/" + groupId, { credentials: "include" });
@@ -194,27 +224,40 @@ export default memo(function StudyGroups() {
             setLoaded(true);
             setLoading(false);
         }
-    }, [groupId, navigate]);
+    }, [isChat, navigate]);
 
+    // History arrives oldest -> newest (the endpoint sorts by seq desc, takes the
+    // page, then flips it back). We keep that order, page with before_seq, and
+    // return the payload so callers can mark the room read.
     const fetchMessages = useCallback(async (beforeSeq) => {
-        if (!groupId || groupId === "create") return;
+        if (!isChat) return null;
         try {
-            const url = API + "/groups/" + groupId + "/messages" + (beforeSeq != null ? "?before_seq=" + beforeSeq : "");
-            const res = await fetch(url, { credentials: "include" });
+            const url = API + "/groups/" + groupId + "/messages"
+                + (beforeSeq != null ? "?before_seq=" + beforeSeq : "");
+            const res = await fetch(url, { credentials: "include", headers: authHeaders() });
             const data = await res.json();
-            if (res.ok && data?.messages) {
-                setMessages((prev) => {
-                    if (!beforeSeq) return data.messages;
-                    const existing = new Map(prev.map((m) => [m.message_id, m]));
-                    const latest = data.messages.filter((m) => !existing.has(m.message_id));
-                    return [...latest, ...prev];
-                });
-                if (data.latest_seq != null) setLastSeq(data.latest_seq);
+            if (!res.ok || !Array.isArray(data?.messages)) return null;
+
+            const page = data.messages;
+            setMessages((prev) => {
+                const known = new Set(prev.map((m) => m.message_id));
+                const fresh = page.filter((m) => m?.message_id && !known.has(m.message_id));
+                if (!fresh.length) return prev;
+                // Older pages belong above what is already on screen.
+                return beforeSeq != null ? [...fresh, ...prev] : [...prev, ...fresh];
+            });
+
+            setHasMoreHistory(!!data.has_more);
+            if (data.oldest_seq != null) setOldestSeq(data.oldest_seq);
+            if (data.latest_seq != null) {
+                setLastSeq((prev) => Math.max(prev || 0, data.latest_seq));
             }
+            return data;
         } catch (err) {
             console.error("fetch messages failed:", err);
+            return null;
         }
-    }, [groupId]);
+    }, [groupId, isChat]);
 
     const sendMessage = useCallback(async (payload) => {
         if (!groupId) return;
@@ -228,8 +271,7 @@ export default memo(function StudyGroups() {
             });
             const data = await res.json();
             if (res.ok) {
-                setMessages((prev) => [data.message, ...prev]);
-                if (data.message?.seq != null) setLastSeq(data.message.seq);
+                appendMessage(data.message);
             } else {
                 toast.error(data?.detail || "Could not send message");
             }
@@ -238,7 +280,7 @@ export default memo(function StudyGroups() {
         } finally {
             setSubmitting(false);
         }
-    }, [groupId]);
+    }, [appendMessage, groupId]);
 
     const sharePaper = useCallback(async (paperId) => {
         if (!groupId || !paperId) return;
@@ -250,7 +292,7 @@ export default memo(function StudyGroups() {
             });
             const data = await res.json();
             if (res.ok) {
-                setMessages((prev) => [data.message, ...prev]);
+                appendMessage(data.message);
                 toast.success("Paper shared to the group");
             } else {
                 toast.error(data?.detail || "Could not share paper");
@@ -260,7 +302,7 @@ export default memo(function StudyGroups() {
         } finally {
             setSubmitting(false);
         }
-    }, [groupId]);
+    }, [appendMessage, groupId]);
 
     const reactToMessage = useCallback(async (messageId, emoji) => {
         if (!groupId || !messageId || !emoji) return;
@@ -326,7 +368,7 @@ export default memo(function StudyGroups() {
             });
             const data = await res.json();
             if (res.ok && data?.message) {
-                setMessages((prev) => [data.message, ...prev]);
+                appendMessage(data.message);
                 setAiHistory((prev) => [
                     ...prev,
                     { role: "user", content: question.trim() },
@@ -345,7 +387,7 @@ export default memo(function StudyGroups() {
         } finally {
             setAiThinking(false);
         }
-    }, [groupId]);
+    }, [appendMessage, groupId]);
 
     const sendVoiceNote = useCallback(async (blob, url, duration) => {
         if (!groupId || !blob) return;
@@ -362,7 +404,7 @@ export default memo(function StudyGroups() {
             });
             const data = await res.json();
             if (res.ok) {
-                setMessages((prev) => [data.message, ...prev]);
+                appendMessage(data.message);
             } else {
                 toast.error(data?.detail || "Could not send voice note");
             }
@@ -371,45 +413,164 @@ export default memo(function StudyGroups() {
         } finally {
             setSubmitting(false);
         }
-    }, [groupId]);
+    }, [appendMessage, groupId]);
+
+    // -- Live connection --------------------------------------------------
+    // The room socket is what makes the chat live: messages, typing dots, who is
+    // online, reactions, receipts and GC AI all arrive here. Sending stays on REST
+    // (it hands back the stored message straight away), and the socket echo of our
+    // own message is dropped by appendMessage's de-dupe on message_id.
+
+    const markRead = useCallback((uptoSeq) => {
+        if (!isChat || !(uptoSeq > 0)) return;
+        fetch(API + "/groups/" + groupId + "/read", {
+            method: "POST",
+            credentials: "include",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ upto_seq: uptoSeq }),
+        }).catch(() => {});
+    }, [groupId, isChat]);
+
+    const socketHandlers = {
+        onMessage: (msg) => {
+            if (!msg?.message_id) return;
+            appendMessage(msg);
+            if (atBottomRef.current) markRead(msg.seq);
+        },
+        onReady: (data) => {
+            // Freshly (re)connected: pull anything that landed while we were away.
+            if (typeof data?.latest_seq === "number" && lastSeq != null && data.latest_seq > lastSeq) {
+                fetchMessages();
+            }
+        },
+        onReaction: (data) => {
+            if (!data?.message_id) return;
+            setMessages((prev) => prev.map((m) => (
+                m.message_id === data.message_id ? { ...m, reactions: data.reactions || {} } : m
+            )));
+        },
+        onRead: (data) => {
+            if (!data?.user_id || !(data.upto_seq > 0)) return;
+            setMessages((prev) => prev.map((m) => (
+                m.sender_id === data.user_id
+                    && (m.seq ?? 0) <= data.upto_seq
+                    && !(m.read_by || []).includes(data.user_id)
+                    ? { ...m, read_by: [...(m.read_by || []), data.user_id] }
+                    : m
+            )));
+        },
+        onMessageDeleted: (data) => {
+            if (!data?.message_id || !data.for_everyone) return;
+            setMessages((prev) => prev.map((m) => (m.message_id === data.message_id
+                ? { ...m, deleted_everyone: true, text: "", paper: null, highlight: null, audio: null, image: null }
+                : m)));
+        },
+        onMembersChanged: () => fetchGroup(),
+        onGroupUpdated: (updates) => setGroup((g) => (g ? { ...g, ...(updates || {}) } : g)),
+        onGroupDeleted: () => {
+            toast.error("This group was deleted.");
+            navigate("/groups", { replace: true });
+        },
+        onJoinRequest: (req) => {
+            if (req?.name) toast.info(req.name + " wants to join the group");
+        },
+        onAIThinking: (data) => {
+            setAiThinking(!!data?.state);
+            if (data?.state && data?.question) setAiQuestion(data.question);
+        },
+        onError: (detail) => {
+            setAiThinking(false);
+            if (detail) toast.error(detail);
+        },
+    };
+
+    const {
+        connected,
+        onlineUsers,
+        typingUsers,
+        sendTyping,
+    } = useGroupSocket(isChat ? groupId : null, socketHandlers);
+
+    const notifyTyping = useCallback(() => {
+        if (!isChat) return;
+        if (sendTyping(true)) {
+            clearTimeout(typingStopRef.current);
+            typingStopRef.current = setTimeout(() => sendTyping(false), 1600);
+        }
+    }, [isChat, sendTyping]);
 
     // -- Effects ----------------------------------------------------------
 
     useEffect(() => {
-        if (groupId && groupId !== "_none" && groupId !== "create") {
-            fetchGroup();
-            fetchMessages();
-        } else {
+        if (!isChat) {
             setLoaded(true);
+            return undefined;
         }
+        atBottomRef.current = true;
+        setHasMoreHistory(false);
+        setOldestSeq(null);
+        fetchGroup();
+        fetchMessages().then((data) => {
+            const newest = data?.latest_seq;
+            if (typeof newest === "number") markRead(newest);
+        });
         return () => {
             setGroup(null);
             setMessages([]);
             setLoaded(false);
+            setAiThinking(false);
             setSelectedPaper(null);
             setShowPaperPicker(false);
             setShowVoiceRecorder(false);
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [groupId]);
+    }, [fetchGroup, fetchMessages, isChat, markRead]);
 
-    useEffect(() => {
-        if (messages.length > 0) {
-            const t = setTimeout(() => {
-                if (scrollRef.current) scrollRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-            }, 50);
-            return () => clearTimeout(t);
+    // Walk back through the conversation one page at a time and hold the view
+    // steady, so loading history never throws the reader somewhere else.
+    const loadOlder = useCallback(async () => {
+        if (!isChat || loadingOlder || !hasMoreHistory || oldestSeq == null) return;
+        setLoadingOlder(true);
+        restoreHeightRef.current = chatBoxRef.current?.scrollHeight ?? null;
+        try {
+            await fetchMessages(oldestSeq);
+        } finally {
+            setLoadingOlder(false);
         }
+    }, [fetchMessages, hasMoreHistory, isChat, loadingOlder, oldestSeq]);
+
+    const handleChatScroll = useCallback((event) => {
+        const el = event.currentTarget;
+        atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+        if (el.scrollTop < 180) loadOlder();
+    }, [loadOlder]);
+
+    // Keep the same messages on screen after an older page lands above them.
+    useLayoutEffect(() => {
+        const box = chatBoxRef.current;
+        if (!box || restoreHeightRef.current == null) return;
+        box.scrollTop += box.scrollHeight - restoreHeightRef.current;
+        restoreHeightRef.current = null;
     }, [messages.length]);
+
+    // Follow the conversation, but only while the reader is parked at the bottom.
+    useEffect(() => {
+        if (!atBottomRef.current) return;
+        const box = chatBoxRef.current;
+        if (box) box.scrollTop = box.scrollHeight;
+    }, [messages.length, typingUsers.length, aiThinking, loaded]);
+
+    useEffect(() => () => clearTimeout(typingStopRef.current), []);
 
     // -- UI handlers --------------------------------------------------------
 
     const handleSubmit = useCallback(() => {
         const text = composer.trim();
         if (!text) return;
+        clearTimeout(typingStopRef.current);
+        sendTyping(false);
         sendMessage({ text, type: "text" });
         setComposer("");
-    }, [composer, sendMessage]);
+    }, [composer, sendMessage, sendTyping]);
 
     const handleVoiceSubmit = useCallback(() => {
         const { lastBlob, lastUrl, duration } = voice;
@@ -525,6 +686,10 @@ export default memo(function StudyGroups() {
                                 <Users className="h-3 w-3" /> {group.member_count} members
                             </button>
                         ) : null}
+                        <span
+                            title={connected ? "Live - messages arrive instantly" : "Reconnecting to the room..."}
+                            className={`h-1.5 w-1.5 rounded-full shrink-0 ${connected ? "bg-green-500" : "bg-amber-400 animate-pulse"}`}
+                        />
                     </div>
                     <p className="text-[11px] text-muted-foreground truncate">{group?.description || ""}</p>
                 </div>
@@ -559,20 +724,39 @@ export default memo(function StudyGroups() {
                 />
             ) : null}
 
-            {/* Chat area */}
-            <div className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5 min-h-0">
+            {/* Chat area - messages are held oldest first, newest at the bottom */}
+            <div
+                ref={chatBoxRef}
+                onScroll={handleChatScroll}
+                className="flex-1 overflow-y-auto px-3 py-2 space-y-1.5 min-h-0"
+            >
                 <AIThinkingBanner active={aiThinking} question={aiQuestion} />
                 <TypingIndicator names={typingUsers.map((t) => t.name).filter(Boolean)} />
 
-                {messages.length === 0 ? (
+                {hasMoreHistory ? (
+                    <div className="flex justify-center py-1">
+                        <button
+                            onClick={loadOlder}
+                            disabled={loadingOlder}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-60"
+                        >
+                            {loadingOlder
+                                ? <Loader2 className="h-3 w-3 animate-spin" />
+                                : <ChevronUp className="h-3 w-3" />}
+                            {loadingOlder ? "Loading older messages..." : "Load older messages"}
+                        </button>
+                    </div>
+                ) : null}
+
+                {messages.length === 0 && !hasMoreHistory ? (
                     <div className="flex flex-col items-center justify-center gap-3 py-14 text-muted-foreground">
                         <MessageSquare className="h-7 w-7" />
                         <p className="text-sm">No messages in this group yet.</p>
                         <p className="text-xs">Share a paper, ask a question, or send a voice note.</p>
                     </div>
-                ) : (
-                    [...messages].reverse().map(renderMessage)
-                )}
+                ) : null}
+
+                {messages.map(renderMessage)}
                 <div ref={scrollRef} />
             </div>
 
@@ -608,7 +792,7 @@ export default memo(function StudyGroups() {
                     <textarea
                         ref={composerRef}
                         value={composer}
-                        onChange={(e) => setComposer(e.target.value)}
+                        onChange={(e) => { setComposer(e.target.value); notifyTyping(); }}
                         onKeyDown={(e) => {
                             if (e.key === "Enter" && !e.shiftKey) {
                                 e.preventDefault();
