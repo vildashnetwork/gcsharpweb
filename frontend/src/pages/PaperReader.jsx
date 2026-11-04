@@ -36,7 +36,7 @@ const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
             <Viewer
                 fileUrl={fileUrl}
                 plugins={[layoutPlugin]}
-            defaultScale={SpecialZoomLevel.PageWidth}
+                defaultScale={SpecialZoomLevel.PageWidth}
                 enableSmoothScroll={true}
             />
         </Worker>
