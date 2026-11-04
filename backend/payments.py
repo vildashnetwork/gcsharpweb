@@ -53,7 +53,9 @@ DEFAULT_PLANS = (
 
 
 class MesombError(Exception):
-    pass
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class MesombClient:
@@ -156,9 +158,23 @@ class MesombClient:
                 )
                 response.raise_for_status()
                 return response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("MeSomb request failed (%s %s): %s", method, path, type(exc).__name__)
-            raise MesombError("MeSomb request failed") from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            logger.warning(
+                "MeSomb returned HTTP %s for %s %s", status_code, method, path
+            )
+            raise MesombError("MeSomb rejected the request", status_code) from exc
+        except httpx.RequestError as exc:
+            logger.warning(
+                "MeSomb transport failed for %s %s: %s",
+                method,
+                path,
+                type(exc).__name__,
+            )
+            raise MesombError("Could not reach MeSomb") from exc
+        except ValueError as exc:
+            logger.warning("MeSomb returned invalid JSON for %s %s", method, path)
+            raise MesombError("MeSomb returned an invalid response") from exc
 
 
 def get_mesomb_client() -> Optional[MesombClient]:
@@ -495,11 +511,38 @@ def configure(db, get_current_user: Callable):
                     "message": f"GC Sharp: {snapshot['name']}",
                 },
             )
-        except MesombError:
+        except MesombError as exc:
+            if (
+                exc.status_code is not None
+                and 400 <= exc.status_code < 500
+                and exc.status_code not in {408, 429}
+            ):
+                await db.payment_orders.update_one(
+                    {"_id": order_id, "status": "pending"},
+                    {
+                        "$set": {
+                            "status": "failed",
+                            "failure_code": "provider_rejected",
+                            "provider_http_status": exc.status_code,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"MeSomb rejected the payment request (HTTP {exc.status_code}). "
+                        "Check the backend credentials, enabled payment service, "
+                        "and payment details."
+                    ),
+                ) from exc
             raise HTTPException(
                 status_code=502,
-                detail="Could not start the payment request. Check this order status before retrying.",
-            )
+                detail=(
+                    "Could not confirm whether MeSomb received the payment request. "
+                    "Check this order status before retrying."
+                ),
+            ) from exc
 
         if not isinstance(result, dict) or result.get("success") is not True:
             await db.payment_orders.update_one(

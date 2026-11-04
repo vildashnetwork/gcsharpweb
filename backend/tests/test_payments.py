@@ -65,6 +65,39 @@ def test_mesomb_signature_matches_canonical_request(monkeypatch):
     )
 
 
+def test_mesomb_http_errors_preserve_status_without_response_body(monkeypatch):
+    response = payments.httpx.Response(
+        401,
+        request=payments.httpx.Request("POST", "https://mesomb.hachther.com/test"),
+        text='{"detail":"sensitive provider response"}',
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def request(self, *args, **kwargs):
+            response.raise_for_status()
+
+    monkeypatch.setattr(payments.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(payments.MesombError) as error:
+        asyncio.run(
+            payments.MesombClient("app", "access", "secret").request(
+                "POST", "/test", {"example": "value"}
+            )
+        )
+
+    assert error.value.status_code == 401
+    assert "sensitive provider response" not in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("phone", "expected"),
     [
