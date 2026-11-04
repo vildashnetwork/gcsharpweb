@@ -9,7 +9,6 @@
 //     const handleGoogleLogin = () => {
 //         // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
 //         const redirectUrl = window.location.origin + "/dashboard";
-//         window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
 //     };
 
 //     const features = [
@@ -162,6 +161,15 @@
 
 
 
+
+
+
+
+
+
+
+
+
 import { useEffect, useState } from "react";
 import {
     GraduationCap,
@@ -177,10 +185,21 @@ import {
     Users,
     CheckCircle2,
     Quote,
+    Phone,
+    Mail,
+    Shield,
+    User,
+    Star,
+    Lock,
+    Facebook,
+    Twitter,
+    Github,
+    Linkedin,
+    Apple
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { useTheme } from "../context/ThemeContext";
-
+import { useAuth } from "@/context/AuthContext";
 function GoogleIcon({ className = "h-5 w-5" }) {
     return (
         <svg className={className} viewBox="0 0 24 24">
@@ -218,6 +237,13 @@ const HERO_IMAGES = [
 export default function Login() {
     const { theme, toggle } = useTheme();
     const [heroIndex, setHeroIndex] = useState(0);
+    const { user, loginWithGoogle } = useAuth();
+    useEffect(() => {
+        if (user) {
+            window.location.href = "/dashboard";
+        }
+    }, [user]);
+
 
     useEffect(() => {
         const id = setInterval(() => {
@@ -226,11 +252,7 @@ export default function Login() {
         return () => clearInterval(id);
     }, []);
 
-    const handleGoogleLogin = () => {
-        // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-        const redirectUrl = window.location.origin + "/dashboard";
-        window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-    };
+    const handleGoogleLogin = loginWithGoogle;
 
     const features = [
         { icon: BookOpen, title: "AI Past Questions", desc: "GCE O/A Level, HND & Concours papers, with instant AI feedback on every answer." },
@@ -338,6 +360,23 @@ export default function Login() {
                             and learn from an AI tutor that explains every mistake.
                         </p>
                         <div className="flex flex-wrap items-center gap-4">
+
+                            {/* <Button
+                                className="h-11 px-5 text-sm font-normal bg-transparent border border-slate-700 text-slate-300 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
+                                onClick={() => window.location.href = "/phone-signin?type=phone"}
+                            >
+                                <Phone className="h-4 w-4 text-slate-400" />
+                                Sign in with phone number
+                            </Button> */}
+
+                            <Button
+                                className="h-11 px-5 text-sm font-normal bg-transparent border border-white font-bold text-white hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors inline-flex items-center gap-2 w-auto"
+                                onClick={() => window.location.href = "/phone-signin?type=email"}
+                            >
+                                <Mail className="h-4 w-4 text-white" />
+                                Sign in with email
+                            </Button>
+
                             <GoogleButton
                                 onClick={handleGoogleLogin}
                                 className="h-12 px-6 text-base bg-white text-slate-800 hover:bg-slate-100 shadow-lg"
@@ -350,8 +389,12 @@ export default function Login() {
                             >
                                 See how it works <ArrowRight className="h-4 w-4" />
                             </a>
+
+
+
+
                         </div>
-                        <p className="mt-5 text-xs text-slate-400">
+                        <p className="mt-5 text-xs text-white/60 max-w-[20rem]">
                             Free to start. New here? We'll walk you through picking your exam level right after sign in.
                         </p>
                     </div>
@@ -390,6 +433,12 @@ export default function Login() {
                         </div>
                     </div>
                 </div>
+
+
+
+
+
+
             </section>
 
             {/* Trust strip */}
@@ -484,23 +533,63 @@ export default function Login() {
                 </div>
             </section>
 
-            {/* Final CTA */}
+
+
+
+
+
+
             <section className="relative overflow-hidden bg-[#0A192F] text-white">
                 <div className="radial-glow" />
+
                 <div className="relative z-10 mx-auto max-w-3xl px-6 py-24 text-center">
-                    <h2 className="text-3xl sm:text-4xl font-display font-bold mb-4">Ready to sharpen your results?</h2>
-                    <p className="text-slate-400 mb-8 max-w-md mx-auto">
+                    <h2 className="text-3xl sm:text-4xl font-display font-bold mb-4">
+                        Ready to sharpen your results?
+                    </h2>
+                    <p className="text-slate-400 mb-10 max-w-md mx-auto">
                         Sign in with Google — we'll walk you through choosing your role and exam level next.
                     </p>
-                    <GoogleButton
-                        onClick={handleGoogleLogin}
-                        className="mx-auto h-12 px-6 text-base bg-white text-slate-800 hover:bg-slate-100 shadow-sm"
-                    >
-                        Continue with Google
-                    </GoogleButton>
-                    <p className="mt-6 text-xs text-slate-500">© 2026 GCSHARP. Premium AI-powered learning.</p>
+
+                    <div className="flex flex-col items-center gap-4 max-w-sm mx-auto">
+                        {/* Primary CTA */}
+                        <GoogleButton
+                            onClick={handleGoogleLogin}
+                            className="w-full h-12 px-6 text-base font-medium bg-white text-slate-900 hover:bg-slate-100 shadow-sm rounded-full transition-colors"
+                        >
+                            Continue with Google
+                        </GoogleButton>
+
+                        {/* Divider */}
+                        <div className="flex items-center gap-3 w-full my-2">
+                            <span className="h-px flex-1 bg-slate-700" />
+                            <span className="text-xs text-slate-500 uppercase tracking-wide">or</span>
+                            <span className="h-px flex-1 bg-slate-700" />
+                        </div>
+
+                        {/* Secondary options */}
+                        {/* <Button
+                            className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
+                            onClick={() => window.location.href = "/phone-signin?type=phone"}
+                        >
+                            <Phone className="h-5 w-5 text-slate-400" />
+                            Sign in with phone number
+                        </Button> */}
+
+                        <Button
+                            className="w-full h-12 px-6 text-base font-normal bg-transparent border border-slate-700 text-slate-200 hover:bg-slate-800/60 hover:border-slate-600 rounded-full transition-colors flex items-center justify-center gap-2"
+                            onClick={() => window.location.href = "/phone-signin?type=email"}
+                        >
+                            <Mail className="h-5 w-5 text-slate-400" />
+                            Sign in with email
+                        </Button>
+                    </div>
+
+                    <p className="mt-8 text-xs text-slate-500">© 2026 GCSHARP. Premium AI-powered learning.</p>
                 </div>
             </section>
+
+
+
         </div>
     );
 }

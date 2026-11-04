@@ -4,6 +4,7 @@ import io
 import re
 import json
 import uuid
+import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -17,6 +18,15 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
+
+from twilio.rest import Client as TwilioClient
+from twilio.base.exceptions import TwilioRestException
+
+# ============================================================
+# Setup logging FIRST - before using logger anywhere
+# ============================================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gcsmart")
 
 # ============================================================
 # Configuration & Environment
@@ -34,6 +44,23 @@ CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*').split(',')
 APP_URL = os.environ.get('APP_URL', 'https://gcsharpweb.onrender.com')
 APP_NAME = os.environ.get('APP_NAME', 'GCSMART AI')
 
+# Twilio Configuration
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
+TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
+TWILIO_MESSAGING_SERVICE_SID = os.environ.get('TWILIO_MESSAGING_SERVICE_SID')
+
+# Initialize Twilio client
+twilio_client = None
+if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+    try:
+        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        logger.info("Twilio client initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize Twilio client: {e}")
+else:
+    logger.warning("Twilio credentials not configured - SMS sending will be disabled")
+
 # Initialize MongoDB
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
@@ -43,7 +70,7 @@ db = client[DB_NAME]
 # ============================================================
 
 app = FastAPI(
-    title="GCSMART API",
+    title="GCSHARP API",
     version="2.1.0",
     description="AI-Powered Educational Platform for Cameroon Students",
     docs_url="/docs",
@@ -51,9 +78,6 @@ app = FastAPI(
 )
 
 api_router = APIRouter(prefix="/api")
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gcsmart")
 
 # ============================================================
 # CORS Configuration
@@ -70,51 +94,77 @@ app.add_middleware(
 # ============================================================
 # LLM Client (OpenRouter, with a resilient model fallback chain)
 # ============================================================
-#
-# WHY THIS CHANGED:
-# The previous version fell back to Hugging Face's free inference API when
-# OpenRouter failed. On Render that call fails with:
-#   [Errno -5] No address associated with hostname
-# This was a DNS resolution failure for api-inference.huggingface.co, common
-# in Render's free-tier network environment. That dependency has been removed
-# entirely — OpenRouter itself now tries several models in order before
-# giving up.
-#
-# UPDATE (Aug 2026): Google, Meta, Mistral, and Qwen all pulled the free
-# (:free) tier of their flagship models from OpenRouter around mid-2026.
-# Requests to the old slugs (gemini-2.5-flash:free, llama-3.3-70b:free,
-# qwen-2.5-72b:free, mistral-7b:free) now return 404 with a message telling
-# you to switch to the paid slug. DEFAULT_MODEL_CHAIN below has been updated
-# to models that are verified free on OpenRouter as of August 2026, with
-# "openrouter/free" (OpenRouter's own auto-router across whatever is
-# currently free) as the final fallback so this keeps working even if the
-# specific named models get deprecated again later. If this happens again,
-# check https://openrouter.ai/models filtered to Price: Free before editing
-# this list — the free-model lineup rotates every few months.
 
 DEFAULT_MODEL_CHAIN = [
-    "google/gemma-4-31b-it:free",              # strong general-purpose free model, vision + tool support
-    "nvidia/nemotron-3-ultra-550b-a55b:free",  # large, high-quality, 1M context window
-    "openai/gpt-oss-20b:free",                 # OpenAI's free-tier open model
-    "openrouter/free",                         # OpenRouter's own auto-router: always resolves to
-                                                # *some* currently-working free model, so this acts
-                                                # as a self-healing last resort even if the models
-                                                # above get deprecated again in the future.
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "openai/gpt-oss-20b:free",
+    "openrouter/free",
 ]
 
+# ============================================================
+# Twilio SMS Helper Function
+# ============================================================
+
+def send_sms_via_twilio(to_number: str, message: str) -> dict:
+    """
+    Send SMS using Twilio
+    Returns: {'success': bool, 'sid': str, 'error': str}
+    """
+    if not twilio_client:
+        return {
+            'success': False,
+            'error': 'Twilio client not initialized. Check your credentials.'
+        }
+
+    if not TWILIO_PHONE_NUMBER and not TWILIO_MESSAGING_SERVICE_SID:
+        return {
+            'success': False,
+            'error': 'No sending phone number or messaging service configured.'
+        }
+
+    try:
+        # Format the phone number with country code
+        if not to_number.startswith('+'):
+            to_number = '+' + to_number
+
+        logger.info(f"Sending SMS to: {to_number}")
+
+        # Send SMS using messaging service or direct phone number
+        if TWILIO_MESSAGING_SERVICE_SID:
+            message = twilio_client.messages.create(
+                body=message,
+                messaging_service_sid=TWILIO_MESSAGING_SERVICE_SID,
+                to=to_number
+            )
+        else:
+            message = twilio_client.messages.create(
+                body=message,
+                from_=TWILIO_PHONE_NUMBER,
+                to=to_number
+            )
+
+        logger.info(f"SMS sent successfully. SID: {message.sid}")
+        return {
+            'success': True,
+            'sid': message.sid,
+            'status': message.status
+        }
+    except TwilioRestException as e:
+        logger.error(f"Twilio error: {e}")
+        return {
+            'success': False,
+            'error': f"Twilio error: {e.msg}",
+            'code': e.code
+        }
+    except Exception as e:
+        logger.error(f"Failed to send SMS: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
 def _sanitize_model_id(raw: str) -> str:
-    """Defensively clean a model ID pulled from an env var. Guards against
-    two common copy-paste mistakes when setting env vars in dashboards like
-    Render's:
-      1. Pasting the whole "KEY=VALUE" line into the Value field, e.g.
-         "OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free" instead
-         of just "nvidia/nemotron-3-ultra-550b-a55b:free".
-      2. Leaving surrounding quotes in, e.g. '"nvidia/..."'.
-    Without this, a single mistyped env var silently breaks the entire
-    model chain (every call 400s with "not a valid model ID") with no
-    obvious cause in the app logs beyond the raw OpenRouter error text.
-    """
     s = raw.strip()
     m = re.match(r'^[A-Z][A-Z0-9_]*=(.+)$', s)
     if m:
@@ -128,10 +178,7 @@ def _sanitize_model_id(raw: str) -> str:
         s = s[1:-1].strip()
     return s
 
-
 def _get_model_chain() -> List[str]:
-    """Build the ordered list of models to try. Primary model (from env)
-    is tried first, followed by any configured fallbacks, de-duplicated."""
     primary = _sanitize_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL_CHAIN[0]))
     extra_raw = os.environ.get("OPENROUTER_MODEL_FALLBACKS", "")
     extra = [_sanitize_model_id(m) for m in extra_raw.split(",") if m.strip()]
@@ -144,11 +191,7 @@ def _get_model_chain() -> List[str]:
             ordered.append(m)
     return ordered
 
-
 class SimpleLLM:
-    """LLM client using OpenRouter, trying multiple free models in order
-    before giving up. No external fallback provider (see note above)."""
-
     def __init__(self, api_key: str = "", models: Optional[List[str]] = None):
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
         self.models = models or _get_model_chain()
@@ -159,8 +202,6 @@ class SimpleLLM:
         self.title = os.environ.get("APP_NAME", "GCSMART AI")
 
     async def _call_model(self, hc: httpx.AsyncClient, model: str, message: str) -> Optional[str]:
-        """Try a single model. Returns the text on success, None on failure
-        (caller moves on to the next model in the chain)."""
         payload = {
             "model": model,
             "messages": [
@@ -168,7 +209,9 @@ class SimpleLLM:
                 {"role": "user", "content": message},
             ],
             "temperature": 0.3,
-            "max_tokens": 1000,
+            # Bumped from 1000 -> 2000: longer worked solutions (mechanics,
+            # multi-step algebra) were getting cut off mid-derivation.
+            "max_tokens": 2000,
         }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -197,7 +240,6 @@ class SimpleLLM:
                 )
                 return None
 
-        # Non-200: log and let the caller try the next model
         detail = ""
         try:
             error_data = response.json()
@@ -208,8 +250,6 @@ class SimpleLLM:
         return None
 
     async def send_message(self, message: str) -> str:
-        """Try each model in self.models in order. Returns the first
-        successful response, or a friendly fallback message if all fail."""
         if not self.api_key:
             logger.error("OPENROUTER_API_KEY is not configured")
             return self._friendly_failure_message()
@@ -231,16 +271,11 @@ class SimpleLLM:
             "In the meantime, you can browse past papers or check your dashboard."
         )
 
-
 # ============================================================
-# Local Math Solver (first line of defense, no API call needed)
+# Local Math Solver
 # ============================================================
 
 def solve_math_local(question: str) -> Optional[str]:
-    """Solve straightforward math problems locally using SymPy, without
-    calling the AI at all. Returns None if the question doesn't look like
-    something this solver can confidently handle, so callers can fall
-    through to the AI."""
     try:
         import sympy as sp
         from sympy.parsing.sympy_parser import (
@@ -248,24 +283,18 @@ def solve_math_local(question: str) -> Optional[str]:
         )
 
         q = question.lower().strip()
-
-        # Only attempt local solving if the question looks mathematical.
-        # This avoids mangling ordinary text questions (e.g. "explain force")
-        # into nonsense expressions.
         math_signal = re.search(r'[0-9]', q) and re.search(r'[+\-*/=^]|sqrt|solve|simplify|factor|derivative|integrate', q)
         if not math_signal:
             return None
 
         transformations = standard_transformations + (implicit_multiplication_application,)
-
         wants_factor = bool(re.search(r'\bfactor(ise)?\b', q))
 
-        # Strip instructional words, keep math-relevant characters
         cleaned = re.sub(r'\b(solve|find|simplify|integrate|differentiate|factor(ise)?|for|the|of|value|calculate|what\s+is)\b', ' ', q)
         allowed = re.findall(r'[0-9a-z+\-*/^=().,\s]', cleaned)
         expr_str = ''.join(allowed).strip()
         expr_str = re.sub(r'\s+', ' ', expr_str).strip()
-        expr_str = expr_str.replace('^', '**')  # sympy's parser treats ^ as XOR, not power
+        expr_str = expr_str.replace('^', '**')
 
         if not expr_str or not re.search(r'[0-9]', expr_str):
             return None
@@ -369,6 +398,53 @@ class SolveRequest(BaseModel):
     subject: Optional[str] = None
 
 # ============================================================
+# Phone & Email Login Models
+# ============================================================
+
+class PhoneLoginRequest(BaseModel):
+    phone: str
+    country_code: str = "+237"
+
+class PhoneVerifyRequest(BaseModel):
+    phone: str
+    country_code: str = "+237"
+    otp: str
+
+class EmailLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class EmailSignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+# ============================================================
+# Settings Models
+# ============================================================
+
+DEFAULT_SETTINGS = {
+    "autoplay_next": True,
+    "default_playback_speed": 1.0,
+    "default_video_quality": "auto",
+    "captions_enabled": False,
+    "notifications_enabled": True,
+    "email_notifications": True,
+    "theme": "system",       # "light" | "dark" | "system"
+    "language": "en",
+}
+
+class SettingsUpdate(BaseModel):
+    autoplay_next: Optional[bool] = None
+    default_playback_speed: Optional[float] = None
+    default_video_quality: Optional[str] = None
+    captions_enabled: Optional[bool] = None
+    notifications_enabled: Optional[bool] = None
+    email_notifications: Optional[bool] = None
+    theme: Optional[str] = None
+    language: Optional[str] = None
+
+# ============================================================
 # Auth Helpers
 # ============================================================
 
@@ -380,7 +456,6 @@ def _new_chat(session_id: str, system: str) -> SimpleLLM:
     return chat
 
 async def get_current_user(request: Request):
-    """Get current user from session token"""
     token = request.cookies.get("session_token")
     if not token:
         auth = request.headers.get("Authorization", "")
@@ -407,12 +482,260 @@ async def get_current_user(request: Request):
     return user
 
 # ============================================================
-# Authentication Routes
+# Phone & Email Authentication Routes
 # ============================================================
+
+# ---------- PHONE AUTH ----------
+
+@api_router.post("/auth/phone/send-otp")
+async def send_phone_otp(req: PhoneLoginRequest):
+    """Send OTP to phone number via Twilio"""
+    try:
+        # Generate 6-digit OTP
+        otp_code = ''.join([str(uuid.uuid4().int % 10) for _ in range(6)])
+
+        # Store OTP in database with expiration (5 minutes)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+        await db.phone_otps.insert_one({
+            "phone": req.phone,
+            "country_code": req.country_code,
+            "otp": otp_code,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "verified": False
+        })
+
+        # Format the full phone number
+        full_number = f"{req.country_code}{req.phone}"
+
+        # Create SMS message
+        sms_message = f"Your GCSHARP verification code is: {otp_code}. Valid for 5 minutes."
+
+        # Send SMS via Twilio
+        result = send_sms_via_twilio(full_number, sms_message)
+
+        if result['success']:
+            logger.info(f"OTP sent to {full_number} via SMS. SID: {result.get('sid')}")
+            return {
+                "success": True,
+                "message": "Verification code sent via SMS",
+                "expires_in": 300
+            }
+        else:
+            # Log the error
+            logger.error(f"SMS failed for {full_number}: {result.get('error')}")
+
+            # Check if we're in development mode
+            env = os.environ.get("ENVIRONMENT", "development")
+
+            if env == "development":
+                # In development, return OTP for testing
+                logger.info(f"Development mode: OTP for {full_number} is {otp_code}")
+                return {
+                    "success": True,
+                    "message": "OTP generated (development mode - SMS not sent)",
+                    "otp": otp_code,
+                    "expires_in": 300,
+                    "warning": "SMS not sent - Twilio error: " + result.get('error', 'Unknown error')
+                }
+            else:
+                # In production, don't return OTP
+                return {
+                    "success": False,
+                    "message": "Failed to send verification code. Please try again.",
+                    "error": "SMS delivery failed"
+                }
+    except Exception as e:
+        logger.error(f"Send OTP error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send verification code")
+
+@api_router.post("/auth/phone/verify")
+async def verify_phone_otp(req: PhoneVerifyRequest, response: Response):
+    """Verify OTP and login/register user"""
+    try:
+        # Find valid OTP
+        otp_record = await db.phone_otps.find_one({
+            "phone": req.phone,
+            "country_code": req.country_code,
+            "otp": req.otp,
+            "verified": False
+        })
+
+        if not otp_record:
+            raise HTTPException(status_code=401, detail="Invalid verification code")
+
+        # Check expiration
+        expires_at = otp_record["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=401, detail="Verification code expired")
+
+        # Mark OTP as verified
+        await db.phone_otps.update_one(
+            {"_id": otp_record["_id"]},
+            {"$set": {"verified": True}}
+        )
+
+        # Find or create user
+        phone_full = f"{req.country_code}{req.phone}"
+        user = await db.users.find_one({"phone": phone_full}, {"_id": 0})
+
+        if not user:
+            # Create new user
+            user_id = f"user_{uuid.uuid4().hex[:12]}"
+            user = {
+                "user_id": user_id,
+                "phone": phone_full,
+                "email": f"user_{uuid.uuid4().hex[:8]}@gcsmart.temp",
+                "name": f"User {phone_full[-4:]}",
+                "role": None,
+                "onboarded": False,
+                "bio": "",
+                "institution": "",
+                "exam_level": "",
+                "study_year": None,
+                "subjects": [],
+                "goals": [],
+                "daily_commitment": "",
+                "proficiency": "",
+                "learning_style": "",
+                "specialization": "",
+                "xp": 0,
+                "level": 1,
+                "streak": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.users.insert_one(dict(user))
+
+        # Create session
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+
+        user.pop("_id", None)
+        user.pop("password", None)
+        return {
+            "success": True,
+            "user": user,
+            "session_token": session_token
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Verify OTP error: {e}")
+        raise HTTPException(status_code=500, detail="Verification failed")
+
+# ---------- EMAIL AUTH ----------
+
+@api_router.post("/auth/email/register")
+async def email_register(req: EmailSignupRequest):
+    """Register with email and password"""
+    try:
+        # Check if email exists
+        existing = await db.users.find_one({"email": req.email})
+        if existing:
+            raise HTTPException(status_code=400, detail="Email already registered")
+
+        # Create user
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        user = {
+            "user_id": user_id,
+            "email": req.email,
+            "name": req.name,
+            "password": req.password,
+            "phone": None,
+            "role": None,
+            "onboarded": False,
+            "bio": "",
+            "institution": "",
+            "exam_level": "",
+            "study_year": None,
+            "subjects": [],
+            "goals": [],
+            "daily_commitment": "",
+            "proficiency": "",
+            "learning_style": "",
+            "specialization": "",
+            "xp": 0,
+            "level": 1,
+            "streak": 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.users.insert_one(dict(user))
+
+        user.pop("_id", None)
+        user.pop("password", None)
+
+        return {"success": True, "user": user}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email register error: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed")
+
+@api_router.post("/auth/email/login")
+async def email_login(req: EmailLoginRequest, response: Response):
+    """Login with email and password"""
+    try:
+        user = await db.users.find_one({"email": req.email}, {"_id": 0})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # In production, use proper password hashing!
+        if user.get("password") != req.password:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        # Create session
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+
+        user.pop("_id", None)
+        user.pop("password", None)
+
+        return {
+            "success": True,
+            "user": user,
+            "session_token": session_token
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email login error: {e}")
+        raise HTTPException(status_code=500, detail="Login failed")
+
+# ---------- EXISTING AUTH ROUTES ----------
 
 @api_router.post("/auth/register")
 async def register_user(req: RegisterRequest):
-    """Register a new user"""
     existing = await db.users.find_one({"email": req.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -422,7 +745,8 @@ async def register_user(req: RegisterRequest):
         "user_id": user_id,
         "email": req.email,
         "name": req.name,
-        "password": req.password,  # TODO: hash with bcrypt/passlib before production launch
+        "password": req.password,
+        "phone": None,
         "role": "student",
         "onboarded": False,
         "bio": "",
@@ -442,11 +766,11 @@ async def register_user(req: RegisterRequest):
     }
     await db.users.insert_one(user)
     user.pop("_id", None)
+    user.pop("password", None)
     return {"success": True, "user": user}
 
 @api_router.post("/auth/login")
 async def login_user(req: LoginRequest, response: Response):
-    """Login user and create session"""
     user = await db.users.find_one({"email": req.email}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -469,11 +793,12 @@ async def login_user(req: LoginRequest, response: Response):
         max_age=7 * 24 * 60 * 60,
     )
     user.pop("_id", None)
+    user.pop("password", None)
     return {"success": True, "user": user, "session_token": session_token}
+
 
 @api_router.post("/auth/session")
 async def process_session(request: Request, response: Response):
-    """Process OAuth session from EmergentAgent"""
     session_id = request.headers.get("X-Session-ID")
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing session id")
@@ -498,6 +823,7 @@ async def process_session(request: Request, response: Response):
             "email": email,
             "name": data.get("name", ""),
             "picture": data.get("picture", ""),
+            "phone": None,
             "role": None,
             "onboarded": False,
             "bio": "",
@@ -532,11 +858,112 @@ async def process_session(request: Request, response: Response):
         max_age=7 * 24 * 60 * 60,
     )
     user.pop("_id", None)
-    return user
+    user.pop("password", None)
+
+    return {
+        "user": user,
+        "session_token": session_token
+    }
+
+
+@api_router.post("/auth/exchange-session")
+async def exchange_session(request: Request, response: Response):
+    """Exchange OAuth session_id for user session with token"""
+    try:
+        body = await request.json()
+        session_id = body.get("sessionId")
+
+        if not session_id:
+            raise HTTPException(status_code=400, detail="Missing session_id")
+
+        logger.info(f"Exchanging session: {session_id}")
+
+        # Fetch session data from auth service
+        async with httpx.AsyncClient() as hc:
+            r = await hc.get(
+                "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+                headers={"X-Session-ID": session_id},
+            )
+
+        if r.status_code != 200:
+            raise HTTPException(status_code=401, detail="Auth failed")
+
+        data = r.json()
+        email = data.get("email")
+
+        if not email:
+            raise HTTPException(status_code=400, detail="No email in session data")
+
+        # Find or create user
+        existing = await db.users.find_one({"email": email})
+
+        if existing:
+            user = existing
+            # Remove sensitive fields
+            user.pop("_id", None)
+            user.pop("password", None)
+        else:
+            user_id = f"user_{uuid.uuid4().hex[:12]}"
+            user = {
+                "user_id": user_id,
+                "email": email,
+                "name": data.get("name", ""),
+                "picture": data.get("picture", ""),
+                "phone": None,
+                "role": None,
+                "onboarded": False,
+                "bio": "",
+                "institution": "",
+                "exam_level": "",
+                "study_year": None,
+                "subjects": [],
+                "goals": [],
+                "daily_commitment": "",
+                "proficiency": "",
+                "learning_style": "",
+                "specialization": "",
+                "xp": 0,
+                "level": 1,
+                "streak": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.users.insert_one(dict(user))
+            user.pop("_id", None)
+            user.pop("password", None)
+
+        # Create session token
+        session_token = f"tok_{uuid.uuid4().hex}"
+        expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+
+        await db.user_sessions.insert_one({
+            "user_id": user["user_id"],
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Set cookie
+        response.set_cookie(
+            key="session_token", value=session_token,
+            httponly=True, secure=True, samesite="none", path="/",
+            max_age=7 * 24 * 60 * 60,
+        )
+
+        return {
+            "user": user,
+            "session_token": session_token
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Exchange session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):
     user.pop("_id", None)
+    user.pop("password", None)
     return user
 
 @api_router.post("/auth/logout")
@@ -553,7 +980,34 @@ async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_curren
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    fresh.pop("password", None)
     return fresh
+
+# ============================================================
+# User Settings
+# ============================================================
+# Stored as a nested "settings" object on the user document.
+# GET always returns the full settings shape (defaults merged with
+# whatever the user has actually saved), so the frontend never has
+# to guess about missing keys.
+
+@api_router.get("/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    stored = user.get("settings") or {}
+    return {**DEFAULT_SETTINGS, **stored}
+
+@api_router.put("/settings")
+async def update_settings(payload: SettingsUpdate, user: dict = Depends(get_current_user)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    current = user.get("settings") or {}
+    merged = {**DEFAULT_SETTINGS, **current, **updates}
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": merged}})
+    return merged
+
+@api_router.post("/settings/reset")
+async def reset_settings(user: dict = Depends(get_current_user)):
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"settings": DEFAULT_SETTINGS}})
+    return dict(DEFAULT_SETTINGS)
 
 # ============================================================
 # Exam Structure
@@ -579,7 +1033,6 @@ async def exam_structure():
 
 @api_router.post("/solve")
 async def solve_math_problem(req: SolveRequest, user: dict = Depends(get_current_user)):
-    """Solve math problems: local SymPy first, then AI (with model fallback chain)."""
     local_result = solve_math_local(req.question)
     if local_result:
         return {
@@ -698,13 +1151,33 @@ async def list_attempts(user: dict = Depends(get_current_user)):
     items = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(200)
     return items
 
+# ============================================================
+# Dashboard Stats
+# ============================================================
+# Study time comes from two sources: quiz-attempt time_spent, and
+# active reading time tracked per-paper in paper_reading_time (see
+# the Reading Time Tracking section below). Each reading-time doc
+# keeps a daily_seconds map (date -> seconds) so the 7-day
+# consistency chart reflects the actual days reading happened on —
+# not just the day of the most recent heartbeat. Older docs written
+# before daily_seconds existed fall back to bucketing by last_updated.
+
 @api_router.get("/dashboard/stats")
 async def dashboard_stats(user: dict = Depends(get_current_user)):
     attempts = await db.attempts.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(500)
-    questions_attempted = sum(a["total"] for a in attempts)
-    correct = sum(a["score"] for a in attempts)
+    questions_attempted = sum(a.get("total", 0) for a in attempts)
+    correct = sum(a.get("score", 0) for a in attempts)
     accuracy = round((correct / questions_attempted) * 100) if questions_attempted else 0
-    study_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    attempt_seconds = sum(a.get("time_spent", 0) for a in attempts)
+
+    reading_docs_full = await db.paper_reading_time.find(
+        {"user_id": user["user_id"]},
+        {"_id": 0, "total_seconds": 1, "daily_seconds": 1, "last_updated": 1}
+    ).to_list(2000)
+    reading_seconds = sum(d.get("total_seconds", 0) for d in reading_docs_full)
+
+    study_seconds = attempt_seconds + reading_seconds
     study_hours = round(study_seconds / 3600, 1)
 
     weak_counter, strong_counter = {}, {}
@@ -718,6 +1191,8 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 
     now = datetime.now(timezone.utc)
     week = [0] * 7
+
+    # Attempt minutes per day
     for a in attempts:
         try:
             d = datetime.fromisoformat(a["created_at"])
@@ -728,6 +1203,29 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
                 week[6 - delta] += round(a.get("time_spent", 0) / 60)
         except Exception:
             pass
+
+    # Reading minutes per day — prefer the daily_seconds breakdown;
+    # fall back to bucketing by last_updated for older docs that
+    # predate daily_seconds.
+    for d_doc in reading_docs_full:
+        daily = d_doc.get("daily_seconds") or {}
+        if daily:
+            for i in range(7):
+                day_key = (now.date() - timedelta(days=i)).isoformat()
+                secs = daily.get(day_key, 0)
+                if secs:
+                    week[6 - i] += round(secs / 60)
+        elif d_doc.get("last_updated"):
+            try:
+                d = datetime.fromisoformat(d_doc["last_updated"])
+                if d.tzinfo is None:
+                    d = d.replace(tzinfo=timezone.utc)
+                delta = (now.date() - d.date()).days
+                if 0 <= delta < 7:
+                    week[6 - delta] += round(d_doc.get("total_seconds", 0) / 60)
+            except Exception:
+                pass
+
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     weekday_today = now.weekday()
     consistency = []
@@ -737,6 +1235,7 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
 
     return {
         "study_hours": study_hours,
+        "study_seconds": study_seconds,
         "questions_attempted": questions_attempted,
         "accuracy": accuracy,
         "streak": user.get("streak", 0),
@@ -748,7 +1247,91 @@ async def dashboard_stats(user: dict = Depends(get_current_user)):
         "recent_attempts": sorted(attempts, key=lambda a: a["created_at"], reverse=True)[:5],
         "consistency": consistency,
         "total_attempts": len(attempts),
+        "total_papers_viewed": len(reading_docs_full),
     }
+
+# ============================================================
+# AI Tutor - Session Management (title, pin, delete)
+# ============================================================
+
+@api_router.put("/ai/sessions/{session_id}/title")
+async def update_session_title(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Update the title of a chat session"""
+    try:
+        body = await request.json()
+        title = body.get("title", "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"title": title, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return {"ok": True, "title": title}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update session title error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/ai/sessions/{session_id}")
+async def delete_session(session_id: str, user: dict = Depends(get_current_user)):
+    """Delete a chat session"""
+    try:
+        result = await db.ai_sessions.delete_one(
+            {"session_id": session_id, "user_id": user["user_id"]}
+        )
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete session error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.put("/ai/sessions/{session_id}/pin")
+async def toggle_pin_session(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    try:
+        body = await request.json()
+        pinned = body.get("pinned", False)
+
+        result = await db.ai_sessions.update_one(
+            {"session_id": session_id, "user_id": user["user_id"]},
+            {"$set": {"pinned": pinned, "updated_at": datetime.now(timezone.utc).isoformat()}}
+        )
+
+        if result.modified_count == 0:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        return {"ok": True, "pinned": pinned}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Toggle pin error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/upload/pdf")
+async def upload_pdf(request: Request, user: dict = Depends(get_current_user)):
+    try:
+        form = await request.form()
+        file = form.get("file")
+
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+
+        content = await file.read()
+        reader = PdfReader(io.BytesIO(content))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+
+        return {"text": text[:5000], "filename": file.filename}
+    except Exception as e:
+        logger.error(f"PDF upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
 # Leaderboard
@@ -786,7 +1369,6 @@ async def ai_session_detail(session_id: str, user: dict = Depends(get_current_us
 
 @api_router.post("/ai/chat")
 async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
-    """Streaming AI chat endpoint for the AI Tutor"""
     session_id = req.session_id or f"chat_{uuid.uuid4().hex[:12]}"
     session = await db.ai_sessions.find_one({"session_id": session_id, "user_id": user["user_id"]}, {"_id": 0})
     if not session:
@@ -833,7 +1415,6 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
             for chunk in [error_msg[i:i+50] for i in range(0, len(error_msg), 50)]:
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
 
-        # Persist conversation
         new_messages = history + [
             {"role": "user", "content": req.message, "ts": datetime.now(timezone.utc).isoformat()},
             {"role": "assistant", "content": full, "ts": datetime.now(timezone.utc).isoformat()},
@@ -856,13 +1437,6 @@ async def ai_chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 
 @api_router.get("/ai/health")
 async def ai_health(user: dict = Depends(get_current_user)):
-    """Diagnostic endpoint: tests each model in the fallback chain with a
-    trivial prompt and reports exactly what happened for each one. Use this
-    instead of digging through Render logs when the AI keeps returning the
-    generic 'trouble reaching the AI service' message — it will tell you
-    whether the problem is a missing/invalid key, rate limiting, or a
-    specific model being unavailable.
-    """
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     result = {
         "api_key_configured": bool(api_key),
@@ -916,21 +1490,18 @@ async def ai_health(user: dict = Depends(get_current_user)):
             result["models_tested"].append(entry)
 
     if any_success:
-        result["diagnosis"] = "At least one model works. If users still see failures, it may be intermittent rate limiting — check timestamps against traffic."
+        result["diagnosis"] = "At least one model works. If users still see failures, it may be intermittent rate limiting."
     elif all(m.get("status_code") == 401 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 401 Unauthorized. The API key is invalid, expired, or was revoked. Generate a new key at openrouter.ai/keys and update it in Render's Environment settings."
+        result["diagnosis"] = "All models returned 401 Unauthorized. The API key is invalid."
     elif all(m.get("status_code") == 429 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 429 Rate Limited. Free-tier OpenRouter models share a global rate limit pool. Consider adding a paid model as a last-resort fallback, or check openrouter.ai/activity for your usage."
-    elif all(m.get("status_code") == 404 for m in result["models_tested"]):
-        result["diagnosis"] = "All models returned 404. These model slugs may no longer exist on OpenRouter — check https://openrouter.ai/models for current free-tier model IDs and update DEFAULT_MODEL_CHAIN."
+        result["diagnosis"] = "All models returned 429 Rate Limited. Check openrouter.ai/activity for your usage."
     else:
-        result["diagnosis"] = "Mixed failures across models — see individual entries above for specific errors."
+        result["diagnosis"] = "Mixed failures across models — see individual entries above."
 
     return result
 
 @api_router.post("/ai/explain")
 async def ai_explain(req: ChatRequest, user: dict = Depends(get_current_user)):
-    """Explain a concept using AI (local math solver first)."""
     local_result = solve_math_local(req.message)
     if local_result:
         return {"answer": local_result, "source": "local_solver"}
@@ -965,7 +1536,7 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
         "video_url": req.video_url,
         "thumbnail": req.thumbnail or "",
         "price": req.price, "duration": req.duration,
-        "views": 0, "earnings": 0, "students": 0,
+        "views": 0, "earnings": 0, "students": 0, "likes": 0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.courses.insert_one(dict(course))
@@ -976,6 +1547,22 @@ async def create_course(req: CourseCreate, user: dict = Depends(get_current_user
 async def list_courses(mine: bool = False, user: dict = Depends(get_current_user)):
     q = {"teacher_id": user["user_id"]} if mine else {}
     items = await db.courses.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    if items:
+        ids = [c["course_id"] for c in items]
+        likes = await db.video_likes.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        saves = await db.video_saves.find(
+            {"user_id": user["user_id"], "course_id": {"$in": ids}}, {"_id": 0, "course_id": 1}
+        ).to_list(len(ids))
+        liked_ids = {l["course_id"] for l in likes}
+        saved_ids = {s["course_id"] for s in saves}
+        for c in items:
+            c.setdefault("likes", 0)
+            c["liked"] = c["course_id"] in liked_ids
+            c["saved"] = c["course_id"] in saved_ids
+
     return items
 
 @api_router.get("/courses/{course_id}")
@@ -983,6 +1570,9 @@ async def get_course(course_id: str, user: dict = Depends(get_current_user)):
     c = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
     if not c:
         raise HTTPException(status_code=404, detail="Not found")
+    c.setdefault("likes", 0)
+    c["liked"] = bool(await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]}))
+    c["saved"] = bool(await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]}))
     return c
 
 @api_router.post("/courses/{course_id}/view")
@@ -1005,6 +1595,156 @@ async def register_view(course_id: str, user: dict = Depends(get_current_user)):
     await db.courses.update_one({"course_id": course_id},
                                 {"$inc": {"views": 1, "students": 1, "earnings": VIEW_RATE_FCFA}})
     return {"counted": True, "rate": VIEW_RATE_FCFA}
+
+# ============================================================
+# Video Interactions: Likes, Saves, Recently Watched
+# ============================================================
+
+# ---------- Likes ----------
+
+@api_router.post("/courses/{course_id}/like")
+async def toggle_like_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_likes.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_likes.delete_one({"_id": existing["_id"]})
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": -1}})
+        liked = False
+    else:
+        await db.video_likes.insert_one({
+            "like_id": f"lk_{uuid.uuid4().hex[:12]}",
+            "course_id": course_id,
+            "user_id": user["user_id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await db.courses.update_one({"course_id": course_id}, {"$inc": {"likes": 1}})
+        liked = True
+
+    fresh = await db.courses.find_one({"course_id": course_id}, {"_id": 0, "likes": 1})
+    return {"liked": liked, "likes": max(0, (fresh or {}).get("likes", 0))}
+
+@api_router.get("/videos/liked")
+async def list_liked_videos(user: dict = Depends(get_current_user)):
+    likes = await db.video_likes.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not likes:
+        return []
+    ids = [l["course_id"] for l in likes]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for l in likes:
+        c = cmap.get(l["course_id"])
+        if c:
+            c = dict(c)
+            c["liked"] = True
+            c["liked_at"] = l["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Saved videos ----------
+
+@api_router.post("/courses/{course_id}/save")
+async def toggle_save_video(course_id: str, user: dict = Depends(get_current_user)):
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    existing = await db.video_saves.find_one({"course_id": course_id, "user_id": user["user_id"]})
+    if existing:
+        await db.video_saves.delete_one({"_id": existing["_id"]})
+        return {"saved": False}
+
+    await db.video_saves.insert_one({
+        "save_id": f"sv_{uuid.uuid4().hex[:12]}",
+        "course_id": course_id,
+        "user_id": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"saved": True}
+
+@api_router.get("/videos/saved")
+async def list_saved_videos(user: dict = Depends(get_current_user)):
+    saves = await db.video_saves.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(500)
+    if not saves:
+        return []
+    ids = [s["course_id"] for s in saves]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for s in saves:
+        c = cmap.get(s["course_id"])
+        if c:
+            c = dict(c)
+            c["saved"] = True
+            c["saved_at"] = s["created_at"]
+            result.append(c)
+    return result
+
+# ---------- Recently watched ----------
+
+@api_router.post("/courses/{course_id}/watch")
+async def record_watch(course_id: str, user: dict = Depends(get_current_user)):
+    """
+    Upserts a recently-watched entry for this user/video, bumping it to
+    the top of their history on repeat views instead of creating a new
+    row each time. Call this whenever a video starts playing — separate
+    from /view, which only counts the first watch for teacher earnings.
+    """
+    course = await db.courses.find_one({"course_id": course_id}, {"_id": 0})
+    if not course:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.watch_history.update_one(
+        {"course_id": course_id, "user_id": user["user_id"]},
+        {
+            "$set": {"watched_at": now_iso},
+            "$setOnInsert": {
+                "history_id": f"wh_{uuid.uuid4().hex[:12]}",
+                "course_id": course_id,
+                "user_id": user["user_id"],
+            },
+        },
+        upsert=True,
+    )
+    return {"ok": True}
+
+@api_router.get("/videos/recently-watched")
+async def list_recently_watched(limit: int = 20, user: dict = Depends(get_current_user)):
+    capped_limit = max(1, min(limit, 100))
+    history = await db.watch_history.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "course_id": 1, "watched_at": 1}
+    ).sort("watched_at", -1).to_list(capped_limit)
+    if not history:
+        return []
+    ids = [h["course_id"] for h in history]
+    courses = await db.courses.find({"course_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+    cmap = {c["course_id"]: c for c in courses}
+    result = []
+    for h in history:
+        c = cmap.get(h["course_id"])
+        if c:
+            c = dict(c)
+            c["watched_at"] = h["watched_at"]
+            result.append(c)
+    return result
+
+@api_router.delete("/videos/recently-watched")
+async def clear_recently_watched(user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_many({"user_id": user["user_id"]})
+    return {"ok": True}
+
+@api_router.delete("/videos/recently-watched/{course_id}")
+async def remove_recently_watched(course_id: str, user: dict = Depends(get_current_user)):
+    await db.watch_history.delete_one({"course_id": course_id, "user_id": user["user_id"]})
+    return {"ok": True}
 
 @api_router.get("/teacher/stats")
 async def teacher_stats(user: dict = Depends(get_current_user)):
@@ -1041,7 +1781,6 @@ async def teacher_stats(user: dict = Depends(get_current_user)):
 
 @api_router.post("/seed")
 async def seed_demo():
-    """Seed demo data for testing"""
     teacher = await db.users.find_one({"email": "demo.teacher@gcsmart.cm"}, {"_id": 0})
     if not teacher:
         tid = f"user_{uuid.uuid4().hex[:12]}"
@@ -1071,7 +1810,7 @@ async def seed_demo():
             await db.courses.insert_one({
                 "course_id": f"crs_{uuid.uuid4().hex[:12]}",
                 "teacher_id": tid, "teacher_name": teacher["name"], "teacher_picture": "",
-                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0,
+                "price": 0, "duration": "45:00", "views": 0, "earnings": 0, "students": 0, "likes": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(), **c,
             })
 
@@ -1116,25 +1855,13 @@ def extract_pdf_text(data: bytes, max_chars: int = 9000) -> str:
     return "\n".join(parts)[:max_chars]
 
 def _clean_json(text: str):
-    """Extract a JSON object from an LLM response, robust to:
-      - markdown code fences (```json ... ```)
-      - reasoning/thinking preambles some models add before the actual
-        answer (e.g. "Okay, the user wants me to..." followed by the JSON) —
-        this became necessary once the free-tier model chain started
-        including reasoning models, which don't reliably respect
-        "return ONLY JSON" instructions.
-      - trailing commentary after the JSON object
-    Raises ValueError if no valid JSON object can be found anywhere in text.
-    """
     text = text.strip()
 
-    # 1) Try a direct parse first (the common, well-behaved case)
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
         pass
 
-    # 2) Look for a fenced code block anywhere in the text, not just at the start
     fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
     if fence_match:
         try:
@@ -1142,8 +1869,6 @@ def _clean_json(text: str):
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # 3) Brace-matching: find the first '{' and its balanced closing '}',
-    # ignoring any reasoning text before or after it.
     start = text.find('{')
     if start != -1:
         depth = 0
@@ -1162,6 +1887,49 @@ def _clean_json(text: str):
 
     raise ValueError("Could not extract valid JSON from AI response")
 
+async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retries: int = 1) -> dict:
+    """
+    Sends `prompt` to the model and parses the reply as JSON, retrying (by
+    default once) with a stronger "JSON only" reminder appended to the SAME
+    prompt if the first reply wasn't valid, parseable JSON containing
+    required_key with a truthy value.
+
+    This exists because the free OpenRouter models in the fallback chain
+    sometimes ignore "return ONLY JSON" under load and wrap the answer in
+    commentary or markdown fences. A plain retry usually fixes it — either
+    the model self-corrects, or the fallback chain happens to land on a
+    different, more compliant model this time.
+
+    Note: SimpleLLM.send_message() is single-turn (system + one user
+    message, no conversation history), so the retry re-sends the full
+    original prompt with the reminder appended rather than a short
+    follow-up — a short follow-up alone would lose all context.
+
+    Raises ValueError if still unparseable after all attempts, and logs the
+    last raw response so failures are actually debuggable instead of
+    disappearing into a generic 502.
+    """
+    last_resp = ""
+    for attempt in range(retries + 1):
+        this_prompt = prompt if attempt == 0 else (
+            prompt + "\n\nIMPORTANT: Your previous reply could not be parsed as JSON. "
+            "Reply again with ONLY the JSON object — no markdown code fences, "
+            "no explanation, nothing before or after it."
+        )
+        resp = await chat.send_message(this_prompt)
+        last_resp = resp
+        try:
+            parsed = _clean_json(resp)
+            if parsed.get(required_key):
+                return parsed
+        except Exception:
+            continue
+    logger.error(
+        f"AI JSON generation failed after {retries + 1} attempt(s) for key '{required_key}'. "
+        f"Last raw response (truncated): {last_resp[:500]!r}"
+    )
+    raise ValueError(f"Could not get valid JSON with key '{required_key}' from AI")
+
 # ============================================================
 # Papers Module
 # ============================================================
@@ -1169,9 +1937,9 @@ def _clean_json(text: str):
 @api_router.get("/papers/filters")
 async def paper_filters(user: dict = Depends(get_current_user)):
     papers = await db.papers.find({}, {"_id": 0}).to_list(1000)
-    levels = sorted({p["level"] for p in papers})
-    subjects = sorted({p["subject"] for p in papers})
-    years = sorted({p["year"] for p in papers}, reverse=True)
+    levels = sorted({p.get("level", "Unknown") for p in papers})
+    subjects = sorted({p.get("subject", "Unknown") for p in papers})
+    years = sorted({p.get("year", 0) for p in papers}, reverse=True)
     return {"levels": levels, "subjects": subjects, "years": years, "papers": [1, 2, 3]}
 
 @api_router.get("/papers")
@@ -1184,7 +1952,19 @@ async def list_papers(level: Optional[str] = None, subject: Optional[str] = None
     if year: query["year"] = year
     if paper: query["paper_number"] = paper
     if q: query["title"] = {"$regex": re.escape(q), "$options": "i"}
+
     papers = await db.papers.find(query, {"_id": 0}).sort([("year", -1), ("subject", 1)]).to_list(500)
+
+    for p in papers:
+        p.setdefault("fileSize", 0)
+        p.setdefault("originalFileSize", 0)
+        p.setdefault("fileType", "application/pdf")
+        p.setdefault("uploadedBy", None)
+        p.setdefault("uploaderName", "Anonymous")
+        p.setdefault("downloads", 0)
+        p.setdefault("description", "")
+        p.setdefault("saved", False)
+
     drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0, "paper_id": 1}).to_list(500)
     saved = {d["paper_id"] for d in drafts}
     for p in papers:
@@ -1293,48 +2073,314 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
     await db.paper_video_cache.insert_one(dict(doc))
     return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
 
+def _strip_reasoning_preamble(text: str) -> str:
+    """
+    Safety net: if the model ignores the system prompt and still opens
+    with a reasoning narration ('We are given...', 'Let's find...'),
+    cut everything before the first '## Given' / '## Solution' heading
+    so the student never sees the leaked thought process.
+    """
+    match = re.search(r'##\s*(Given|Solution)', text)
+    if match and match.start() > 0:
+        return text[match.start():].strip()
+    return text
+
 @api_router.post("/papers/ask")
 async def ask_about_paper(req: AskRequest, user: dict = Depends(get_current_user)):
     p = await db.papers.find_one({"paper_id": req.paper_id}, {"_id": 0})
     subject = p["subject"] if p else "General"
-    system = (f"You are GC AI, an expert {subject} tutor. A student highlighted a question from an exam paper. "
-              "Solve it clearly with concise numbered steps and a final answer.")
+    system = (
+        f"You are GC AI, an expert {subject} exam tutor writing a final worked solution for a student. "
+        "CRITICAL: Do NOT show your internal reasoning process. Never write phrases like "
+        "'We are given', 'We need to find', 'Let's define', 'Let's assume', or any narration of "
+        "how you are thinking through the problem. Go straight to the structured solution as if "
+        "writing model answers for an exam mark scheme.\n\n"
+        "Format your answer using these markdown sections:\n"
+        "## Given\n"
+        "A short bullet list of the known quantities from the question.\n\n"
+        "## Solution\n"
+        "Clearly numbered steps (1., 2., 3. ...), each showing the working, not the thought process. "
+        "Use $ ... $ for inline math and $$ ... $$ for standalone equations.\n\n"
+        "## Answer\n"
+        "The final numeric or symbolic result, stated in one line.\n\n"
+        "Be concise. Do not restate the question. Do not apologize or hedge."
+    )
     chat = _new_chat(f"ask_{uuid.uuid4().hex}", system)
-    resp = await chat.send_message(f"Solve this exam question step by step:\n\n{req.question}")
+    resp = await chat.send_message(f"Question:\n\n{req.question}")
+    resp = _strip_reasoning_preamble(resp)
     return {"answer": resp}
+
+# ============================================================
+# Reading Time Tracking
+# ============================================================
+# Each document tracks total_seconds (lifetime total for that paper)
+# AND a daily_seconds map (date -> seconds) so the dashboard's 7-day
+# consistency chart can attribute time to the day it was actually
+# read on, rather than lumping everything onto the day of the last
+# heartbeat.
+
+class ReadingTimeRequest(BaseModel):
+    seconds: int  # delta seconds since last heartbeat
+
+@api_router.post("/papers/{paper_id}/reading-time")
+async def record_reading_time(paper_id: str, req: ReadingTimeRequest, user: dict = Depends(get_current_user)):
+    # Clamp to guard against a stalled tab sending a huge delta after resume
+    seconds = max(0, min(req.seconds, 120))
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    today_key = now.date().isoformat()
+
+    await db.paper_reading_time.update_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]},
+        {
+            "$inc": {
+                "total_seconds": seconds,
+                f"daily_seconds.{today_key}": seconds,
+            },
+            "$set": {"last_updated": now_iso},
+            "$setOnInsert": {
+                "record_id": f"rt_{uuid.uuid4().hex[:12]}",
+                "paper_id": paper_id,
+                "user_id": user["user_id"],
+                "created_at": now_iso,
+            },
+        },
+        upsert=True,
+    )
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"ok": True, "total_seconds": doc.get("total_seconds", 0) if doc else seconds}
+
+@api_router.get("/papers/{paper_id}/reading-time")
+async def get_reading_time(paper_id: str, user: dict = Depends(get_current_user)):
+    doc = await db.paper_reading_time.find_one(
+        {"paper_id": paper_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
+    return {"total_seconds": (doc or {}).get("total_seconds", 0)}
 
 # ============================================================
 # Drafts
 # ============================================================
 
-@api_router.get("/drafts")
-async def list_drafts(user: dict = Depends(get_current_user)):
-    drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
-    ids = [d["paper_id"] for d in drafts]
-    papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
-    pmap = {p["paper_id"]: p for p in papers}
-    result = []
-    for d in drafts:
-        pp = pmap.get(d["paper_id"])
-        if pp:
-            pp = dict(pp); pp["saved"] = True; pp["saved_at"] = d["created_at"]
-            result.append(pp)
-    return result
+# ============================================================
+# Drafts
+# ============================================================
 
 @api_router.post("/drafts")
 async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
-    existing = await db.drafts.find_one({"user_id": user["user_id"], "paper_id": req.paper_id})
-    if existing:
-        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
-        return {"saved": False}
-    await db.drafts.insert_one({"user_id": user["user_id"], "paper_id": req.paper_id,
-                                "created_at": datetime.now(timezone.utc).isoformat()})
-    return {"saved": True}
+    try:
+        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
+
+        # Check if draft already exists
+        existing = await db.drafts.find_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id
+        })
+
+        if existing:
+            # Remove draft
+            result = await db.drafts.delete_one({
+                "user_id": user["user_id"], 
+                "paper_id": req.paper_id
+            })
+            logger.info(f"Drafts - Removed draft for {req.paper_id}")
+            return {"saved": False}
+        else:
+            # Create draft with a unique draft_id
+            draft_doc = {
+                "draft_id": f"draft_{uuid.uuid4().hex[:12]}",
+                "user_id": user["user_id"],
+                "paper_id": req.paper_id,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            result = await db.drafts.insert_one(draft_doc)
+            logger.info(f"Drafts - Saved draft for {req.paper_id} with id: {result.inserted_id}")
+            return {"saved": True}
+            
+    except Exception as e:
+        logger.error(f"Drafts error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update draft: {str(e)}")
 
 @api_router.delete("/drafts/{paper_id}")
 async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
-    await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
-    return {"ok": True}
+    try:
+        result = await db.drafts.delete_one({
+            "user_id": user["user_id"], 
+            "paper_id": paper_id
+        })
+        if result.deleted_count == 0:
+            logger.warning(f"Drafts - No draft found for paper {paper_id}")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/drafts")
+async def list_drafts(user: dict = Depends(get_current_user)):
+    try:
+        drafts = await db.drafts.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1).to_list(500)
+
+        if not drafts:
+            return []
+
+        ids = [d["paper_id"] for d in drafts]
+        papers = await db.papers.find({"paper_id": {"$in": ids}}, {"_id": 0}).to_list(500)
+        pmap = {p["paper_id"]: p for p in papers}
+
+        result = []
+        for d in drafts:
+            pp = pmap.get(d["paper_id"])
+            if pp:
+                pp = dict(pp)
+                pp["saved"] = True
+                pp["saved_at"] = d["created_at"]
+                result.append(pp)
+            else:
+                result.append({
+                    "paper_id": d["paper_id"],
+                    "title": "Paper not found",
+                    "subject": "Unknown",
+                    "level": "Unknown",
+                    "year": 0,
+                    "paper_number": 0,
+                    "pdf_url": "",
+                    "description": "",
+                    "saved": True,
+                    "saved_at": d["created_at"]
+                })
+        return result
+    except Exception as e:
+        logger.error(f"List drafts error: {e}")
+        return []
+# ============================================================
+# Generate Video from Highlighted Text
+# ============================================================
+
+class HighlightVideoRequest(BaseModel):
+    text: str  # The highlighted text from the PDF
+    context: Optional[str] = None  # Optional surrounding context
+
+@api_router.post("/papers/{paper_id}/video/highlight")
+async def generate_video_from_highlight(paper_id: str, req: HighlightVideoRequest, user: dict = Depends(get_current_user)):
+    """
+    Generate a video solution based on the highlighted text from the PDF
+    """
+    # Get the paper for context
+    p = await db.papers.find_one({"paper_id": paper_id}, {"_id": 0})
+    if not p:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    # Check cache for this specific highlight.
+    # NOTE: uses hashlib, not Python's built-in hash() — str hashing is
+    # randomized per-process (PYTHONHASHSEED) for security reasons, so
+    # hash(req.text) produced a different cache_key after every server
+    # restart, silently orphaning all previously cached entries. sha256
+    # is stable across restarts.
+    text_hash = hashlib.sha256(req.text.encode("utf-8")).hexdigest()[:16]
+    cache_key = f"{paper_id}_{text_hash}"
+    cached = await db.highlight_video_cache.find_one({"cache_key": cache_key}, {"_id": 0})
+    if cached:
+        return {"scenes": cached["scenes"], "title": cached["title"], "question": cached["question"], "cached": True}
+
+    # Get the paper text for context
+    data = await fetch_pdf_bytes(p["pdf_url"])
+    full_text = extract_pdf_text(data, max_chars=3000)
+
+    system = (
+        "You are a master teacher creating a narrated video lesson that solves a specific "
+        "exam question that a student has highlighted. Return STRICT JSON only, "
+        "with no reasoning or thinking text before or after it."
+    )
+
+    prompt = (
+        f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
+        f"STUDENT HIGHLIGHTED THIS TEXT:\n{req.text}\n\n"
+        f"PAPER CONTEXT (for reference):\n{full_text[:1500]}\n\n"
+        "Create a video walkthrough that solves the question or explains the concept "
+        "the student highlighted. If it's a question, solve it step by step. "
+        "If it's a concept, explain it clearly with examples. "
+        "Return JSON: {\"title\":\"...\",\"question\":\"...\","
+        "\"scenes\":[{\"heading\":\"Step title\","
+        "\"board\":[\"line shown on whiteboard\",\"another line\"],"
+        "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
+        "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
+    )
+
+    chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system)
+
+    # Was: a single chat.send_message() call with no retry, so any one
+    # non-JSON reply from a free model (or the whole model chain being
+    # down) turned straight into a 502 with no way to tell which had
+    # happened. _ask_ai_for_json retries once with a stronger reminder,
+    # and logs the actual raw response on failure.
+    try:
+        parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
+        raw_scenes = parsed["scenes"]
+    except Exception as e:
+        logger.error(f"Highlight video generation failed for paper {paper_id}: {e}")
+        raise HTTPException(status_code=502, detail="Couldn't build a video solution for your selection. Please try again.")
+
+    scenes = []
+    for i, sc in enumerate(raw_scenes[:8]):
+        narration = (sc.get("narration") or sc.get("heading") or "")[:900]
+        scenes.append({
+            "heading": sc.get("heading", f"Step {i+1}"),
+            "board": sc.get("board", []),
+            "narration": narration,
+            "audio": "",
+        })
+
+    doc = {
+        "cache_key": cache_key,
+        "paper_id": paper_id,
+        "title": parsed.get("title", f"Solution for highlighted text"),
+        "question": parsed.get("question", req.text[:200]),
+        "scenes": scenes,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.highlight_video_cache.insert_one(dict(doc))
+
+    return {"scenes": scenes, "title": doc["title"], "question": doc["question"], "cached": False}
+
+@api_router.post("/drafts")
+async def save_draft(req: DraftRequest, user: dict = Depends(get_current_user)):
+    try:
+        logger.info(f"Drafts - User: {user['user_id']}, Paper: {req.paper_id}")
+
+        paper = await db.papers.find_one({"paper_id": req.paper_id})
+        if not paper:
+            logger.warning(f"Drafts - Paper not found: {req.paper_id}, but allowing draft")
+
+        existing = await db.drafts.find_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id
+        })
+
+        if existing:
+            await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": req.paper_id})
+            logger.info(f"Drafts - Removed draft for {req.paper_id}")
+            return {"saved": False}
+
+        await db.drafts.insert_one({
+            "user_id": user["user_id"],
+            "paper_id": req.paper_id,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        logger.info(f"Drafts - Saved draft for {req.paper_id}")
+        return {"saved": True}
+    except Exception as e:
+        logger.error(f"Drafts error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.delete("/drafts/{paper_id}")
+async def delete_draft(paper_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await db.drafts.delete_one({"user_id": user["user_id"], "paper_id": paper_id})
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"Delete draft error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================
 # Root Endpoints

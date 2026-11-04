@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
@@ -44,6 +45,20 @@ function XPRing({ xp, level, toNext }) {
     );
 }
 
+// Formats accumulated study time for display. Under an hour, shows
+// whole minutes (e.g. "14m") instead of a misleading "0.0h" — a
+// single decimal of *hours* can't represent a couple minutes of
+// reading. Once past an hour, switches to a one-decimal hour figure.
+function formatStudyTime(totalSeconds) {
+    const seconds = Math.max(0, totalSeconds || 0);
+    if (seconds < 3600) {
+        const minutes = Math.round(seconds / 60);
+        return minutes > 0 ? `${minutes}m` : "0m";
+    }
+    const hours = seconds / 3600;
+    return `${hours.toFixed(1)}h`;
+}
+
 export default function Dashboard() {
     const navigate = useNavigate();
     const { user } = useAuth();
@@ -52,9 +67,27 @@ export default function Dashboard() {
     const [courses, setCourses] = useState([]);
 
     useEffect(() => {
-        api.get("/dashboard/stats").then((r) => setStats(r.data)).catch(() => {});
-        api.get("/leaderboard").then((r) => setBoard(r.data)).catch(() => {});
-        api.get("/courses").then((r) => setCourses(r.data.slice(0, 4))).catch(() => {});
+        const loadStats = () => api.get("/dashboard/stats").then((r) => setStats(r.data)).catch(() => { });
+
+        loadStats();
+        api.get("/leaderboard").then((r) => setBoard(r.data)).catch(() => { });
+        api.get("/courses").then((r) => setCourses(r.data.slice(0, 4))).catch(() => { });
+
+        // Study time accrues elsewhere (e.g. the paper reader) via
+        // frequent small saves, so refresh stats periodically while
+        // this tab is visible, and again whenever the window regains
+        // focus — e.g. after switching back from reading a paper.
+        const interval = setInterval(() => {
+            if (document.visibilityState === "visible") loadStats();
+        }, 30000);
+
+        const onFocus = () => loadStats();
+        window.addEventListener("focus", onFocus);
+
+        return () => {
+            clearInterval(interval);
+            window.removeEventListener("focus", onFocus);
+        };
     }, []);
 
     const roadmap = [
@@ -79,8 +112,8 @@ export default function Dashboard() {
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 {stats ? (
                     <>
-                        <StatCard testid="stat-study-hours" icon={Clock} label="Study Hours" value={`${stats.study_hours}h`} accent="bg-accent text-primary" />
-                        <StatCard testid="stat-questions" icon={Target} label="Questions Attempted" value={stats.questions_attempted} accent="bg-success/15 text-success" />
+                        <StatCard testid="stat-study-hours" icon={Clock} label="Study Time" value={formatStudyTime(stats.study_seconds)} accent="bg-accent text-primary" />
+                        <StatCard testid="stat-questions" icon={Target} label="Questions Attempted" value={stats.total_papers_viewed} accent="bg-success/15 text-success" />
                         <StatCard testid="stat-accuracy" icon={TrendingUp} label="Accuracy" value={`${stats.accuracy}%`} accent="bg-primary/15 text-primary" />
                         <StatCard testid="stat-streak" icon={Flame} label="Day Streak" value={stats.streak} accent="bg-warning/15 text-warning" />
                     </>
@@ -120,8 +153,9 @@ export default function Dashboard() {
                         <Calendar className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div className="space-y-3">
+                        {/* border-l-4 ${r.color} */}
                         {roadmap.map((r) => (
-                            <div key={r.title} className={`rounded-lg border border-border border-l-4 ${r.color} bg-secondary/40 p-3`}>
+                            <div key={r.title} className={`rounded-lg border border-border  bg-secondary/40 p-3`}>
                                 <div className="flex items-center justify-between">
                                     <span className="text-xs font-medium">{r.tag}</span>
                                     <span className="text-xs text-muted-foreground">{r.when}</span>
@@ -178,13 +212,13 @@ export default function Dashboard() {
             <div>
                 <div className="flex items-center justify-between mb-4">
                     <h2 className="text-lg font-display font-semibold">Lesson Videos for You</h2>
-                    <button onClick={() => navigate("/study")} className="text-sm text-primary flex items-center gap-1 hover:underline">
+                    <button onClick={() => navigate("/videos")} className="text-sm text-primary flex items-center gap-1 hover:underline">
                         View all <ArrowRight className="h-4 w-4" />
                     </button>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     {courses.length ? courses.map((c) => (
-                        <button key={c.course_id} onClick={() => navigate("/study")} data-testid={`course-card-${c.course_id}`}
+                        <button key={c.course_id} onClick={() => navigate(`/videos/${c.course_id}`)} data-testid={`course-card-${c.course_id}`}
                             className="text-left rounded-xl border border-border bg-card overflow-hidden hover:-translate-y-0.5 transition-transform group">
                             <div className="h-28 bg-secondary relative">
                                 {c.thumbnail && <img src={c.thumbnail} alt={c.title} className="h-full w-full object-cover" />}

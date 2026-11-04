@@ -1,6 +1,6 @@
 // import axios from "axios";
 
-// const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+// const BACKEND_URL = process.env.APP_BACKEND_URL;
 // export const API = `${BACKEND_URL}/api`;
 
 // const api = axios.create({
@@ -36,7 +36,7 @@
 // src/lib/api.ts
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || "https://gcsharpweb.onrender.com";
+const BACKEND_URL = process.env.APP_BACKEND_URL || "https://auth.gcsharp.com";
 export const API = `${BACKEND_URL}/api`;
 
 const api = axios.create({
