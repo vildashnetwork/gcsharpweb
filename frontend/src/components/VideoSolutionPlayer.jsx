@@ -114,6 +114,17 @@ import {
 import Markdown from "./Markdown";
 
 const RATE_STEPS = [0.75, 1, 1.25, 1.5];
+const TEMPLATE_TEXT = /\b(?:step title|line shown on whiteboard|another line|what the teacher says)\b/i;
+
+function cleanSceneHeading(heading, index) {
+    const text = String(heading || "").replace(/^\s*#{1,6}\s*/, "").trim();
+    return !text || TEMPLATE_TEXT.test(text) ? `Step ${index + 1}` : text;
+}
+
+function cleanBoardLines(board) {
+    const lines = Array.isArray(board) ? board : [];
+    return lines.filter((line) => !TEMPLATE_TEXT.test(String(line || "")));
+}
 
 export default function VideoSolutionPlayer({ scenes, title, question }) {
     const [idx, setIdx] = useState(0);
@@ -142,6 +153,8 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
 
     const scene = scenes?.[idx] || null;
     const totalScenes = scenes?.length || 0;
+    const sceneHeading = cleanSceneHeading(scene?.heading, idx);
+    const boardLines = cleanBoardLines(scene?.board);
 
     // ------------------------------------------------------------
     // Narration source for this scene:
@@ -471,12 +484,12 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
 
                 {/* Heading */}
                 <h3 className="relative z-10 font-display font-semibold text-lg md:text-xl mb-3 text-blue-200">
-                    {scene?.heading || `Step ${idx + 1}`}
+                    {sceneHeading}
                 </h3>
 
                 {/* Board content with reveal animation */}
                 <div className="relative z-10 space-y-2 text-sm md:text-base max-h-[55%] overflow-y-auto">
-                    {(scene?.board || []).map((line, i) => (
+                    {boardLines.map((line, i) => (
                         <div
                             key={i}
                             className={`transition-all duration-300 [&_p]:m-0 [&_p]:text-slate-200 [&_p]:text-sm md:[&_p]:text-base ${i < revealed ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-4"
@@ -699,7 +712,6 @@ function formatTime(seconds) {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
-
 
 
 

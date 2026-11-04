@@ -5,8 +5,10 @@ import { memo, useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
+import { SelectionMode, selectionModePlugin } from '@react-pdf-viewer/selection-mode';
 import '@react-pdf-viewer/core/lib/styles/index.css';
 import '@react-pdf-viewer/default-layout/lib/styles/index.css';
+import '@react-pdf-viewer/selection-mode/lib/styles/index.css';
 import api, { API } from "../lib/api";
 import { Button } from "../components/ui/button";
 import VideoSolutionPlayer from "../components/VideoSolutionPlayer";
@@ -30,16 +32,49 @@ const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
     const layoutPlugin = defaultLayoutPlugin({
         sidebarTabs: () => [],
     });
+    const textSelectionPlugin = selectionModePlugin();
+    const SwitchSelectionMode = textSelectionPlugin.SwitchSelectionMode;
 
     return (
-        <Worker workerUrl={PDF_WORKER_URL}>
-            <Viewer
-                fileUrl={fileUrl}
-                plugins={[layoutPlugin]}
-                defaultScale={SpecialZoomLevel.PageWidth}
-                enableSmoothScroll={true}
-            />
-        </Worker>
+        <div>
+            <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card/95 p-2 backdrop-blur">
+                <SwitchSelectionMode mode={SelectionMode.Text}>
+                    {({ isSelected, onClick }) => (
+                        <button
+                            type="button"
+                            onClick={onClick}
+                            aria-pressed={isSelected}
+                            className={`rounded-lg px-3 py-2 text-sm font-medium ${isSelected ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}
+                        >
+                            Select text
+                        </button>
+                    )}
+                </SwitchSelectionMode>
+                <SwitchSelectionMode mode={SelectionMode.Hand}>
+                    {({ isSelected, onClick }) => (
+                        <button
+                            type="button"
+                            onClick={onClick}
+                            aria-pressed={isSelected}
+                            className={`rounded-lg px-3 py-2 text-sm font-medium ${isSelected ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}
+                        >
+                            Move PDF
+                        </button>
+                    )}
+                </SwitchSelectionMode>
+                <span className="text-xs text-muted-foreground">
+                    On phones, press and hold text, then adjust the selection handles.
+                </span>
+            </div>
+            <Worker workerUrl={PDF_WORKER_URL}>
+                <Viewer
+                    fileUrl={fileUrl}
+                    plugins={[layoutPlugin, textSelectionPlugin]}
+                    defaultScale={SpecialZoomLevel.PageWidth}
+                    enableSmoothScroll={true}
+                />
+            </Worker>
+        </div>
     );
 });
 

@@ -2675,9 +2675,10 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
         f"This is {p['level']} {p['subject']} {p['year']} Paper {p['paper_number']}.\n\n"
         f"PAPER TEXT:\n{text}\n\n"
         "Pick the FIRST substantial question and create a video walkthrough that solves it. "
-        "Return JSON: {\"title\":\"...\",\"question\":\"...\",\"scenes\":[{\"heading\":\"Step title\","
-        "\"board\":[\"line shown on whiteboard\",\"another line\"],\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
-        "Create 4 to 6 scenes ending with the final answer. Narration must be natural spoken English. Return ONLY JSON."
+        "Return JSON with title, question, and 4-6 scenes ending with the final answer. "
+        "Each scene needs a descriptive heading, a board array with actual equations "
+        "or explanations, and natural spoken-English narration under 500 characters. "
+        "Do not copy schema examples or placeholder text into the output. Return ONLY JSON."
     )
     chat = _new_chat(f"vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
 
@@ -3392,11 +3393,12 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
         "Create a video walkthrough that solves the question or explains the concept "
         "the student highlighted. If it's a question, solve it step by step. "
         "If it's a concept, explain it clearly with examples. "
-        "Return JSON: {\"title\":\"...\",\"question\":\"...\","
-        "\"scenes\":[{\"heading\":\"Step title\","
-        "\"board\":[\"line shown on whiteboard\",\"another line\"],"
-        "\"narration\":\"what the teacher says, <= 500 chars\"}]}. "
-        "Create 3-6 scenes. Narration must be natural spoken English. Return ONLY JSON."
+        "Return JSON with title, question, and 3-6 scenes. Each scene must have "
+        "a descriptive heading, a board array of actual equations or explanations "
+        "to display, and natural spoken-English narration under 500 characters. "
+        "Never copy schema examples or placeholder phrases such as 'Step title', "
+        "'line shown on whiteboard', or 'another line' into the output. "
+        "Narration must be natural spoken English. Return ONLY JSON."
     )
 
     chat = _new_chat(f"highlight_vid_{uuid.uuid4().hex}", system, use_web=False, use_knowledge=False)
