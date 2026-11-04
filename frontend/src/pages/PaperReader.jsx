@@ -37,8 +37,8 @@ const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
     const SwitchSelectionMode = textSelectionPlugin.SwitchSelectionMode;
 
     return (
-        <div>
-            <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card/95 p-2 backdrop-blur">
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="z-10 flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-card/95 p-2 backdrop-blur">
                 <SwitchSelectionMode mode={SelectionMode.Text}>
                     {({ isSelected, onClick }) => (
                         <button
@@ -63,18 +63,20 @@ const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
                         </button>
                     )}
                 </SwitchSelectionMode>
-                <span className="text-xs text-muted-foreground">
+                <span className="hidden text-xs text-muted-foreground sm:inline">
                     On phones, press and hold text, then adjust the selection handles.
                 </span>
             </div>
-            <Worker workerUrl={PDF_WORKER_URL}>
-                <Viewer
-                    fileUrl={fileUrl}
-                    plugins={[layoutPlugin, textSelectionPlugin]}
-                    defaultScale={SpecialZoomLevel.PageWidth}
-                    enableSmoothScroll={true}
-                />
-            </Worker>
+            <div className="min-h-0 flex-1">
+                <Worker workerUrl={PDF_WORKER_URL}>
+                    <Viewer
+                        fileUrl={fileUrl}
+                        plugins={[layoutPlugin, textSelectionPlugin]}
+                        defaultScale={SpecialZoomLevel.PageWidth}
+                        enableSmoothScroll={true}
+                    />
+                </Worker>
+            </div>
         </div>
     );
 });
@@ -843,7 +845,7 @@ export default function PaperReader() {
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
                 {/* PDF viewer */}
                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
-                    <div className="h-[80vh] min-h-[480px] overflow-auto bg-secondary/20">
+                    <div className="h-[80vh] min-h-[480px] overflow-hidden bg-secondary/20">
                         {pdfError ? (
                             <div className="py-20 text-center text-sm text-muted-foreground">
                                 Could not load this PDF. Try refreshing the page.
