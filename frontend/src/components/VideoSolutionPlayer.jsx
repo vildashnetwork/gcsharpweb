@@ -336,7 +336,7 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
             clearInterval(progressIntervalRef.current);
             clearTimeout(advanceTimerRef.current);
         };
-    }, [playing, idx, audioMode, rate, scene, advanceToNext]);
+    }, [playing, idx, audioMode, rate, scene, narration, advanceToNext]);
 
     // ------------------------------------------------------------
     // MODE: "file" — real base64 mp3 audio, if the backend ever
@@ -718,7 +718,6 @@ function formatTime(seconds) {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
-
 
 
 
