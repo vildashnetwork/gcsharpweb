@@ -3184,9 +3184,9 @@ async def websocket_notifications(websocket: WebSocket, user_id: str = None, tok
 
 @api_router.get("/notifications/push-key")
 async def get_push_public_key():
-    if not VAPID_PUBLIC_KEY:
-        raise HTTPException(status_code=503, detail="Push notifications are not configured")
-    return {"public_key": VAPID_PUBLIC_KEY}
+    if not webpush or not VAPID_PUBLIC_KEY or not VAPID_PRIVATE_KEY:
+        return {"enabled": False, "public_key": None}
+    return {"enabled": True, "public_key": VAPID_PUBLIC_KEY}
 
 @api_router.post("/notifications/push-subscription")
 async def save_push_subscription(req: PushSubscriptionRequest, user: dict = Depends(get_current_user)):
