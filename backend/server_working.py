@@ -569,8 +569,9 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections[user_id] = websocket
 
-    def disconnect(self, user_id: str):
-        self.active_connections.pop(user_id, None)
+    def disconnect(self, user_id: str, websocket: Optional[WebSocket] = None):
+        if websocket is None or self.active_connections.get(user_id) is websocket:
+            self.active_connections.pop(user_id, None)
 
     async def send_personal_message(self, message: dict, user_id: str):
         websocket = self.active_connections.get(user_id)
@@ -578,7 +579,7 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
             except Exception:
-                self.disconnect(user_id)
+                self.disconnect(user_id, websocket)
 
 manager = ConnectionManager()
 
@@ -3133,28 +3134,49 @@ async def daily_reminder_job():
 # NOTE: This is a raw Starlette/FastAPI WebSocket route (NOT Socket.IO).
 # Because it's registered on `api_router` (prefix="/api"), the actual
 # mounted path clients must connect to is:
-#     ws(s)://<host>/api/ws/notifications?user_id=<user_id>
+#     ws(s)://<host>/api/ws/notifications?user_id=<user_id>&token=<session_token>
 # A Socket.IO client will NOT work against this endpoint (different
 # handshake protocol/framing) and will typically receive a 403. Connect
-# with the native browser WebSocket API instead, e.g.:
-#     new WebSocket(`${wsBase}/api/ws/notifications?user_id=${userId}`)
+# with the native browser WebSocket API instead.
 
 @api_router.websocket("/ws/notifications")
-async def websocket_notifications(websocket: WebSocket, user_id: str = None):
+async def websocket_notifications(websocket: WebSocket, user_id: str = None, token: str = None):
     """
-    WebSocket endpoint for real-time notifications.
-    Connect with ?user_id=<user_id> to receive personal notifications.
+    WebSocket endpoint for authenticated real-time notifications.
     """
-    if not user_id:
+    token = token or websocket.cookies.get("session_token")
+    if not user_id or not token:
         await websocket.close(code=1008)
         return
+
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    if not session or session.get("user_id") != user_id:
+        await websocket.close(code=1008)
+        return
+    try:
+        expires_at = session["expires_at"]
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        await websocket.close(code=1008)
+        return
+    if expires_at < datetime.now(timezone.utc):
+        await websocket.close(code=1008)
+        return
+
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        await websocket.close(code=1008)
+        return
+
     await manager.connect(user_id, websocket)
     try:
         while True:
-            # Keep the connection alive; we don't expect messages from client
             await websocket.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
+        manager.disconnect(user_id, websocket)
 
 # ============================================================
 # Notification REST Endpoints

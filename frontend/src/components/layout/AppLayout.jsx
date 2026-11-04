@@ -279,12 +279,12 @@ import {
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
-import io from "socket.io-client";
 import api from "../../lib/api";
+import { notificationSocketUrl } from "../../lib/realtime";
 import { toast } from "sonner";
 
-// WebSocket URL (adjust to your backend)
-const SOCKET_URL = import.meta.env.VITE_API_URL || "https://gcsharpweb.onrender.com";
+const NOTIFICATION_PING_MS = 25_000;
+const NOTIFICATION_MAX_BACKOFF_MS = 15_000;
 
 function urlBase64ToUint8Array(value) {
     const padding = "=".repeat((4 - (value.length % 4)) % 4);
@@ -394,7 +394,6 @@ export default function AppLayout({ children }) {
     const [notifications, setNotifications] = useState([]);
     const [unreadCount, setUnreadCount] = useState(0);
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
-    const [socket, setSocket] = useState(null);
 
     // Study-groups unread badge state (totals come from GET /groups/summary/badges)
     const [groupMeta, setGroupMeta] = useState(null);
@@ -445,57 +444,69 @@ export default function AppLayout({ children }) {
         }
     };
 
-    // ----- WebSocket connection -----
+    // ----- Native WebSocket connection -----
     useEffect(() => {
         if (!user?.user_id) return;
+        let cancelled = false;
+        let reconnectTimer;
+        let pingTimer;
+        let notificationSocket;
+        let retryCount = 0;
 
-        // Connect to WebSocket with user ID
-        const newSocket = io(SOCKET_URL, {
-            path: "/ws/notifications",
-            query: { user_id: user.user_id },
-            transports: ["websocket"],
-        });
-
-        newSocket.on("connect", () => {
-            console.log("Notification WebSocket connected");
-        });
-
-        newSocket.on("notification", (data) => {
-            // Add new notification to the list
-            setNotifications(prev => [data, ...prev]);
-            setUnreadCount(prev => prev + 1);
-
-            // Keep the sidebar group unread badge fresh when a group notification arrives.
-            if (data?.type === "group_message" && data?.link?.startsWith("/groups/")) {
+        const connect = () => {
+            if (cancelled) return;
+            notificationSocket = new WebSocket(notificationSocketUrl(user.user_id));
+            notificationSocket.onopen = () => {
+                retryCount = 0;
+                pingTimer = window.setInterval(() => {
+                    if (notificationSocket.readyState === WebSocket.OPEN) {
+                        notificationSocket.send("ping");
+                    }
+                }, NOTIFICATION_PING_MS);
+            };
+            notificationSocket.onmessage = (event) => {
+                let data;
                 try {
-                    const group_id = data.link.slice("/groups/".length).split("/")[0];
-                    if (group_id) fetchGroupMeta();
-                } catch (_) { /* best effort */ }
-            }
+                    data = JSON.parse(event.data);
+                } catch (error) {
+                    console.error("Could not parse notification message:", error);
+                    return;
+                }
+                if (!data || typeof data.message !== "string") return;
 
-            // Show browser notification if supported
-            if ("Notification" in window && Notification.permission === "granted") {
-                new Notification("GCSHARP", {
-                    body: data.message,
-                    icon: "/logo192.png",
-                });
-            }
+                setNotifications((previous) => [data, ...previous]);
+                setUnreadCount((previous) => previous + 1);
 
-            // Also show toast
-            toast.info(data.message, { duration: 5000 });
-        });
+                if (data.type === "group_message" && data.link?.startsWith("/groups/")) {
+                    fetchGroupMeta();
+                }
 
-        newSocket.on("disconnect", () => {
-            console.log("Notification WebSocket disconnected");
-        });
-
-        setSocket(newSocket);
-
-        // Cleanup
-        return () => {
-            newSocket.disconnect();
+                if ("Notification" in window && Notification.permission === "granted") {
+                    new Notification("GCSHARP", {
+                        body: data.message,
+                        icon: "/logo192.png",
+                    });
+                }
+                toast.info(data.message, { duration: 5000 });
+            };
+            notificationSocket.onclose = () => {
+                window.clearInterval(pingTimer);
+                if (cancelled) return;
+                const delay = Math.min(1200 * (retryCount + 1), NOTIFICATION_MAX_BACKOFF_MS);
+                retryCount += 1;
+                reconnectTimer = window.setTimeout(connect, delay);
+            };
+            notificationSocket.onerror = () => notificationSocket.close();
         };
-    }, [user, fetchGroupMeta]);
+
+        connect();
+        return () => {
+            cancelled = true;
+            window.clearTimeout(reconnectTimer);
+            window.clearInterval(pingTimer);
+            notificationSocket?.close();
+        };
+    }, [user?.user_id, fetchGroupMeta]);
 
     // Fetch initial notifications when user logs in
     useEffect(() => {
@@ -510,11 +521,19 @@ export default function AppLayout({ children }) {
         if (!user?.user_id || !("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
 
         const registerPush = async () => {
+            let data;
+            try {
+                ({ data } = await api.get("/notifications/push-key"));
+            } catch (error) {
+                if (error.response?.status === 503) return;
+                throw error;
+            }
+            if (!data?.public_key) return;
+
             const permission = await Notification.requestPermission();
             if (permission !== "granted") return;
 
             const registration = await navigator.serviceWorker.register("/push-sw.js");
-            const { data } = await api.get("/notifications/push-key");
             let subscription = await registration.pushManager.getSubscription();
             if (!subscription) {
                 subscription = await registration.pushManager.subscribe({
@@ -528,7 +547,7 @@ export default function AppLayout({ children }) {
         registerPush().catch((error) => {
             console.error("Push notification registration failed:", error);
         });
-    }, [user]);
+    }, [user?.user_id]);
 
     // ----- Request notification permission -----
     const requestNotificationPermission = () => {
