@@ -339,9 +339,9 @@ function AppRouter() {
             <Route
                 path="/buy-tokens"
                 element={
-                    <Protected title="Buy Tokens & Offline Access">
-                        <Payments />
-                    </Protected>
+                    // <Protected title="Buy Tokens & Offline Access">
+                    <Payments />
+                    // </Protected>
                 }
             />
 
