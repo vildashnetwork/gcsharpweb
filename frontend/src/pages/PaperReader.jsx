@@ -1,7 +1,7 @@
 
 
 // pages/PaperReader.jsx
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
@@ -475,6 +475,11 @@ export default function PaperReader() {
     const containerRef = useRef(null);
     const answerRef = useRef(null);
     const videoRef = useRef(null);
+    const viewerPlugins = useMemo(() => [
+        defaultLayoutPlugin({
+            sidebarTabs: () => [],
+        }),
+    ], []);
 
     const { displaySeconds, saving } = useActiveReadingTimer(paperId);
 
@@ -670,11 +675,6 @@ export default function PaperReader() {
         }
     };
 
-    // PDF Viewer plugins
-    const defaultLayoutPluginInstance = defaultLayoutPlugin({
-        sidebarTabs: () => [],
-    });
-
     useEffect(() => {
         api.get(`/papers/${paperId}`).then((r) => setPaper(r.data)).catch(() => toast.error("Paper not found"));
     }, [paperId]);
@@ -779,7 +779,7 @@ export default function PaperReader() {
                             <Worker workerUrl={PDF_WORKER_URL}>
                                 <Viewer
                                     fileUrl={pdfBlobUrl}
-                                    plugins={[defaultLayoutPluginInstance]}
+                                    plugins={viewerPlugins}
                                     defaultScale={SpecialZoomLevel.PageFit}
                                     enableSmoothScroll={true}
                                 />
