@@ -1,7 +1,7 @@
 
 
 // pages/PaperReader.jsx
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { memo, useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Viewer, Worker, SpecialZoomLevel } from '@react-pdf-viewer/core';
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout';
@@ -25,6 +25,23 @@ import { toast } from "sonner";
 // PDF worker version
 const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
+const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
+    const layoutPlugin = defaultLayoutPlugin({
+        sidebarTabs: () => [],
+    });
+
+    return (
+        <Worker workerUrl={PDF_WORKER_URL}>
+            <Viewer
+                fileUrl={fileUrl}
+                plugins={[layoutPlugin]}
+                defaultScale={SpecialZoomLevel.PageFit}
+                enableSmoothScroll={true}
+            />
+        </Worker>
+    );
+});
 
 // ============================================================
 // Smart Navigation Module
@@ -475,11 +492,6 @@ export default function PaperReader() {
     const containerRef = useRef(null);
     const answerRef = useRef(null);
     const videoRef = useRef(null);
-    const viewerPlugins = useMemo(() => [
-        defaultLayoutPlugin({
-            sidebarTabs: () => [],
-        }),
-    ], []);
 
     const { displaySeconds, saving } = useActiveReadingTimer(paperId);
 
@@ -776,14 +788,7 @@ export default function PaperReader() {
                                 Could not load this PDF. Try refreshing the page.
                             </div>
                         ) : pdfBlobUrl ? (
-                            <Worker workerUrl={PDF_WORKER_URL}>
-                                <Viewer
-                                    fileUrl={pdfBlobUrl}
-                                    plugins={viewerPlugins}
-                                    defaultScale={SpecialZoomLevel.PageFit}
-                                    enableSmoothScroll={true}
-                                />
-                            </Worker>
+                            <PaperPdfViewer fileUrl={pdfBlobUrl} />
                         ) : (
                             <div className="py-20 flex justify-center">
                                 <Loader2 className="h-6 w-6 animate-spin text-primary" />
