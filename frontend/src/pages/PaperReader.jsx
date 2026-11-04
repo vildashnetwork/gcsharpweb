@@ -27,6 +27,7 @@ import { toast } from "sonner";
 // PDF worker version
 const PDFJS_VERSION = "3.11.174";
 const PDF_WORKER_URL = `https://unpkg.com/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+const MAX_HIGHLIGHT_CHARS = 3000;
 
 const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
     const layoutPlugin = defaultLayoutPlugin({
@@ -655,6 +656,10 @@ export default function PaperReader() {
             toast.error("Please select more text to generate a video");
             return;
         }
+        if (highlightedText.length > MAX_HIGHLIGHT_CHARS) {
+            toast.error("Select one question or a shorter passage before generating a video.");
+            return;
+        }
 
         setVideoLoading(true);
         try {
@@ -679,6 +684,19 @@ export default function PaperReader() {
     // Custom text selection handler
     const handleTextSelection = useCallback(() => {
         const selection = window.getSelection();
+        const viewer = containerRef.current?.querySelector(".rpv-core__viewer");
+        if (
+            !selection
+            || !viewer
+            || !selection.anchorNode
+            || !selection.focusNode
+            || !viewer.contains(selection.anchorNode)
+            || !viewer.contains(selection.focusNode)
+        ) {
+            setSelectedText("");
+            setShowAskButton(false);
+            return;
+        }
         const text = selection?.toString().trim();
 
         if (text && text.length > 3) {
@@ -706,6 +724,10 @@ export default function PaperReader() {
 
     const handleAskClick = () => {
         if (selectedText) {
+            if (selectedText.length > MAX_HIGHLIGHT_CHARS) {
+                toast.error("Select one question or a shorter passage before asking AI.");
+                return;
+            }
             SmartNavigation.scrollToAnswer(answerRef, 100);
             askAI(selectedText);
             setShowAskButton(false);
@@ -715,6 +737,10 @@ export default function PaperReader() {
 
     const handleGenerateVideoClick = () => {
         if (selectedText) {
+            if (selectedText.length > MAX_HIGHLIGHT_CHARS) {
+                toast.error("Select one question or a shorter passage before generating a video.");
+                return;
+            }
             SmartNavigation.scrollToVideo(videoRef, 100);
             generateHighlightVideo(selectedText);
             setShowAskButton(false);
@@ -966,20 +992,19 @@ export default function PaperReader() {
                           gap-2 bg-card rounded-xl shadow-2xl flex-col border border-border p-2 min-w-[160px]`}>
                         <button
                             onClick={handleAskClick}
-                            className="flex items-center gap-2 rounded-lg bg-primary text-white text-sm px-4 py-2.5 hover:bg-primary/90 transition-all active:scale-95 w-full"
+                            disabled={selectedText.length > MAX_HIGHLIGHT_CHARS}
+                            className="flex items-center gap-2 rounded-lg bg-primary text-white text-sm px-4 py-2.5 hover:bg-primary/90 transition-all active:scale-95 w-full disabled:opacity-50"
                         >
                             <Sparkles className="h-4 w-4" />
                             Ask AI
-                            {isMobile && (
-                                <span className="text-[10px] opacity-70 ml-auto">
-                                    {selectedText.length} chars
-                                </span>
-                            )}
+                            <span className="text-[10px] opacity-70 ml-auto">
+                                {selectedText.length} / {MAX_HIGHLIGHT_CHARS} chars
+                            </span>
                         </button>
 
                         <button
                             onClick={handleGenerateVideoClick}
-                            disabled={videoLoading}
+                            disabled={videoLoading || selectedText.length > MAX_HIGHLIGHT_CHARS}
                             className="flex items-center gap-2 rounded-lg bg-secondary text-foreground text-sm px-4 py-2.5 hover:bg-secondary/80 transition-all active:scale-95 border border-border w-full disabled:opacity-50"
                         >
                             {videoLoading ? (
@@ -989,6 +1014,11 @@ export default function PaperReader() {
                             )}
                             {videoLoading ? 'Generating...' : 'Generate Video'}
                         </button>
+                        {selectedText.length > MAX_HIGHLIGHT_CHARS && (
+                            <p role="status" className="px-2 text-xs text-destructive">
+                                Select one question or a shorter passage.
+                            </p>
+                        )}
                     </div>
                 </div>
             )}

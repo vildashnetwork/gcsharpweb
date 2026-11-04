@@ -23,7 +23,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse, Response as F
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from bson import ObjectId
 
 from twilio.rest import Client as TwilioClient
@@ -2472,14 +2472,32 @@ async def _ask_ai_for_json(chat: SimpleLLM, prompt: str, required_key: str, retr
     raise ValueError(f"Could not get valid JSON with key '{required_key}' from AI")
 
 
+_VIDEO_TEMPLATE_TEXT = re.compile(
+    r"\b(?:step title|line shown on whiteboard|another line|what the teacher says)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_video_heading(value, index: int) -> str:
+    heading = re.sub(r"^\s*#{1,6}\s*", "", str(value or "")).strip()
+    return f"Step {index + 1}" if not heading or _VIDEO_TEMPLATE_TEXT.search(heading) else heading[:120]
+
+
 def _board_lines(items) -> list:
     """Normalise whiteboard lines (strings only, trimmed, capped)."""
     lines = []
     for item in items or []:
         text = str(item).strip() if item is not None else ""
-        if text:
+        if text and not _VIDEO_TEMPLATE_TEXT.search(text):
             lines.append(text[:300])
     return lines[:12]
+
+
+def _clean_video_narration(value, board: list) -> str:
+    narration = str(value or "").strip()
+    if not narration or _VIDEO_TEMPLATE_TEXT.search(narration):
+        narration = " ".join(board)
+    return narration[:900]
 
 
 def _fallback_video_scenes(question: str, answer: str) -> list:
@@ -2506,7 +2524,11 @@ def _fallback_video_scenes(question: str, answer: str) -> list:
         heading = f"Step {i + 1}"
         if lines and len(lines[0].lstrip("# ").strip()) <= 60:
             heading = lines[0].lstrip("# ").strip()
-        board = _board_lines(lines) or [part[:300]]
+        heading = _clean_video_heading(heading, i)
+        board = _board_lines(lines)
+        if not board:
+            fallback_line = part[:300]
+            board = [fallback_line] if fallback_line and not _VIDEO_TEMPLATE_TEXT.search(fallback_line) else ["Review the question carefully."]
         scenes.append({
             "heading": heading,
             "board": board,
@@ -2692,11 +2714,18 @@ async def generate_video_solution(paper_id: str, user: dict = Depends(get_curren
         if not raw_scenes:
             raise ValueError("empty scenes")
         for i, sc in enumerate(raw_scenes[:6]):
-            narration = (sc.get("narration") or sc.get("heading") or "")[:900]
             raw_board = sc.get("board", []) or []
-            board = raw_board if isinstance(raw_board, list) else [str(raw_board)]
+            board = _board_lines(raw_board if isinstance(raw_board, list) else [raw_board])
+            heading = _clean_video_heading(sc.get("heading"), i)
+            narration = _clean_video_narration(sc.get("narration"), board)
+            if not board and not narration:
+                continue
+            if not board:
+                board = [narration[:300]]
+            if not narration:
+                narration = " ".join(board)[:900]
             scenes.append({
-                "heading": sc.get("heading", f"Step {i+1}"),
+                "heading": heading,
                 "board": board,
                 "narration": narration,
                 "audio": "",
@@ -3362,7 +3391,7 @@ async def list_drafts(user: dict = Depends(get_current_user)):
 # ============================================================
 
 class HighlightVideoRequest(BaseModel):
-    text: str  # The highlighted text from the PDF
+    text: str = Field(min_length=10, max_length=3000)  # The highlighted text from the PDF
     context: Optional[str] = None  # Optional surrounding context
 
 @api_router.post("/papers/{paper_id}/video/highlight")
@@ -3410,11 +3439,18 @@ async def generate_video_from_highlight(paper_id: str, req: HighlightVideoReques
         parsed = await _ask_ai_for_json(chat, prompt, "scenes", retries=1)
         raw_scenes = parsed["scenes"]
         for i, sc in enumerate(raw_scenes[:8]):
-            narration = (sc.get("narration") or sc.get("heading") or "")[:900]
             raw_board = sc.get("board", []) or []
-            board = raw_board if isinstance(raw_board, list) else [str(raw_board)]
+            board = _board_lines(raw_board if isinstance(raw_board, list) else [raw_board])
+            heading = _clean_video_heading(sc.get("heading"), i)
+            narration = _clean_video_narration(sc.get("narration"), board)
+            if not board and not narration:
+                continue
+            if not board:
+                board = [narration[:300]]
+            if not narration:
+                narration = " ".join(board)[:900]
             scenes.append({
-                "heading": sc.get("heading", f"Step {i+1}"),
+                "heading": heading,
                 "board": board,
                 "narration": narration,
                 "audio": "",

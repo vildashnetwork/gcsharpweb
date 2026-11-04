@@ -126,6 +126,11 @@ function cleanBoardLines(board) {
     return lines.filter((line) => !TEMPLATE_TEXT.test(String(line || "")));
 }
 
+function cleanSceneNarration(narration) {
+    const text = String(narration || "").trim();
+    return TEMPLATE_TEXT.test(text) ? "" : text;
+}
+
 export default function VideoSolutionPlayer({ scenes, title, question }) {
     const [idx, setIdx] = useState(0);
     const [playing, setPlaying] = useState(false);
@@ -155,6 +160,7 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
     const totalScenes = scenes?.length || 0;
     const sceneHeading = cleanSceneHeading(scene?.heading, idx);
     const boardLines = cleanBoardLines(scene?.board);
+    const narration = cleanSceneNarration(scene?.narration);
 
     // ------------------------------------------------------------
     // Narration source for this scene:
@@ -167,7 +173,7 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
     //  - "none": nothing to narrate
     // ------------------------------------------------------------
     const hasFileAudio = !!(scene?.audio && scene.audio.length > 50);
-    const hasNarrationText = !!(scene?.narration && scene.narration.trim().length > 0);
+    const hasNarrationText = narration.length > 0;
     const audioMode = hasFileAudio ? "file" : hasNarrationText && ttsSupported ? "tts" : hasNarrationText ? "timer" : "none";
 
     // Reset progress / reveal / audio error whenever the scene changes
@@ -285,11 +291,11 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
         if (window.speechSynthesis.paused && startedKeyRef.current === key) {
             window.speechSynthesis.resume();
         } else {
-            speakText(scene.narration);
+            speakText(narration);
             startedKeyRef.current = key;
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [playing, idx, rate, muted, audioMode, scene, speakText]);
+    }, [playing, idx, rate, muted, audioMode, narration, speakText]);
 
     // Stop any speech when leaving the component entirely
     useEffect(() => {
@@ -309,7 +315,7 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
         clearTimeout(advanceTimerRef.current);
         if (!playing) return;
 
-        const text = scene?.narration || "";
+        const text = narration;
         const words = text.trim().split(/\s+/).filter(Boolean).length;
         // ~2.3 words/sec baseline reading pace, scaled by the chosen speed
         const estMs = Math.max(2500, (words / (2.3 * rate)) * 1000);
@@ -522,7 +528,7 @@ export default function VideoSolutionPlayer({ scenes, title, question }) {
                 {/* {showCaptions && hasNarrationText && (
                     <div className="absolute bottom-20 left-4 right-4 z-10 text-center">
                         <p className="inline-block bg-black/60 text-slate-100 text-xs md:text-sm px-3 py-1.5 rounded-lg leading-snug">
-                            {scene.narration}
+                            {narration}
                         </p>
                     </div>
                 )} */}
@@ -712,8 +718,6 @@ function formatTime(seconds) {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
-
-
 
 
 
