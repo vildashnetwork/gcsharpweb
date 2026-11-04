@@ -13,7 +13,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 from pymongo.errors import DuplicateKeyError
 
 
@@ -26,6 +26,7 @@ PAYMENT_METHODS = {
 }
 FINAL_FAILURE_STATUSES = {"FAILED", "CANCELLED", "EXPIRED"}
 FINAL_SUCCESS_STATUS = "SUCCESS"
+MAX_PURCHASE_UNITS = 10_000
 DEFAULT_PLANS = (
     {
         "_id": "ai_tokens_10",
@@ -248,6 +249,57 @@ def _public_plan(plan: dict) -> dict:
     }
 
 
+def _build_product_snapshot(plan: dict, quantity: Optional[int] = None) -> dict:
+    if not valid_plan(plan):
+        raise HTTPException(status_code=404, detail="Payment plan is not available")
+    if quantity is not None and (
+        isinstance(quantity, bool)
+        or not isinstance(quantity, int)
+        or not 1 <= quantity <= MAX_PURCHASE_UNITS
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Quantity must be between 1 and {MAX_PURCHASE_UNITS}.",
+        )
+
+    if plan["product_type"] == "ai_tokens":
+        base_quantity = plan["token_quantity"]
+        if plan["amount"] % base_quantity:
+            raise HTTPException(
+                status_code=422,
+                detail="This token plan cannot be priced per token.",
+            )
+        units = quantity if quantity is not None else base_quantity
+        token_quantity = units
+        duration_days = None
+    else:
+        base_quantity, remainder = divmod(plan["duration_days"], 30)
+        if remainder or base_quantity <= 0 or plan["amount"] % base_quantity:
+            raise HTTPException(
+                status_code=422,
+                detail="This offline plan cannot be priced per month.",
+            )
+        units = quantity if quantity is not None else base_quantity
+        token_quantity = None
+        duration_days = units * 30
+
+    unit_price = plan["amount"] // base_quantity
+    amount = unit_price * units
+    if amount > 10_000_000:
+        raise HTTPException(status_code=422, detail="The requested purchase is too large.")
+
+    return {
+        "name": plan["name"],
+        "product_type": plan["product_type"],
+        "amount": amount,
+        "currency": "XAF",
+        "duration_days": duration_days,
+        "token_quantity": token_quantity,
+        "quantity": units,
+        "unit_price": unit_price,
+    }
+
+
 def _safe_order(order: dict) -> dict:
     result = {
         "order_id": order["_id"],
@@ -409,6 +461,7 @@ def configure(db, get_current_user: Callable):
         product_id: str = Field(min_length=1, max_length=100)
         payment_method: Literal["mtn_momo", "orange_money"]
         phone_number: str = Field(min_length=9, max_length=32)
+        quantity: Optional[conint(strict=True, ge=1, le=MAX_PURCHASE_UNITS)] = None
 
     @router.get("/plans")
     async def list_plans(user: dict = Depends(get_current_user)):
@@ -430,6 +483,11 @@ def configure(db, get_current_user: Callable):
             raise HTTPException(status_code=400, detail="Invalid Idempotency-Key header")
         local_phone, phone_e164 = normalize_cameroon_phone(request.phone_number)
 
+        plan = await db.payment_plans.find_one({"_id": request.product_id})
+        if not plan or not valid_plan(plan):
+            raise HTTPException(status_code=404, detail="Payment plan is not available")
+        snapshot = _build_product_snapshot(plan, request.quantity)
+
         existing = await db.payment_orders.find_one(
             {"user_id": user["user_id"], "idempotency_key": idempotency_key}
         )
@@ -443,11 +501,20 @@ def configure(db, get_current_user: Callable):
                     status_code=409,
                     detail="This idempotency key was already used for a different checkout.",
                 )
+            previous_quantity = existing["product_snapshot"].get("quantity")
+            if previous_quantity is None:
+                previous_quantity = (
+                    existing["product_snapshot"]["token_quantity"]
+                    if plan["product_type"] == "ai_tokens"
+                    else existing["product_snapshot"]["duration_days"] // 30
+                )
+            if previous_quantity != snapshot["quantity"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This idempotency key was already used for a different quantity.",
+                )
             return _checkout_response(existing)
 
-        plan = await db.payment_plans.find_one({"_id": request.product_id})
-        if not plan or not valid_plan(plan):
-            raise HTTPException(status_code=404, detail="Payment plan is not available")
         mesomb = get_mesomb_client()
         if not mesomb:
             raise HTTPException(
@@ -457,14 +524,6 @@ def configure(db, get_current_user: Callable):
 
         now = datetime.now(timezone.utc)
         order_id = str(uuid.uuid4())
-        snapshot = {
-            "name": plan["name"],
-            "product_type": plan["product_type"],
-            "amount": plan["amount"],
-            "currency": "XAF",
-            "duration_days": plan.get("duration_days"),
-            "token_quantity": plan.get("token_quantity"),
-        }
         order = {
             "_id": order_id,
             "user_id": user["user_id"],
@@ -491,6 +550,11 @@ def configure(db, get_current_user: Callable):
                 and existing["payment_method"] == request.payment_method
                 and existing["phone_e164"] == phone_e164
             ):
+                if existing["product_snapshot"].get("quantity") != snapshot["quantity"]:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This idempotency key was already used for a different quantity.",
+                    )
                 return _checkout_response(existing)
             raise HTTPException(status_code=409, detail="Checkout request already exists")
 

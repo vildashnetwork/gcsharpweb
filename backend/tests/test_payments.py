@@ -135,6 +135,30 @@ def test_only_configured_plans_are_sellable():
     assert not payments.valid_plan({**plan, "duration_days": True})
 
 
+def test_purchase_quantity_sets_server_calculated_price_and_entitlement():
+    token_plan = payments.DEFAULT_PLANS[0]
+    offline_plan = payments.DEFAULT_PLANS[1]
+
+    tokens = payments._build_product_snapshot(token_plan, 25)
+    months = payments._build_product_snapshot(offline_plan, 5)
+
+    assert tokens["amount"] == 1250
+    assert tokens["token_quantity"] == 25
+    assert months["amount"] == 2500
+    assert months["duration_days"] == 150
+
+    # Omitting quantity preserves the original one-plan checkout behavior.
+    assert payments._build_product_snapshot(token_plan)["token_quantity"] == 10
+    assert payments._build_product_snapshot(offline_plan)["duration_days"] == 60
+
+
+@pytest.mark.parametrize("quantity", [0, -1, 10_001, True, 1.5])
+def test_reject_invalid_purchase_quantity(quantity):
+    with pytest.raises(HTTPException) as error:
+        payments._build_product_snapshot(payments.DEFAULT_PLANS[0], quantity)
+    assert error.value.status_code == 422
+
+
 def test_default_plans_are_seeded_without_overwriting_existing_settings():
     class PaymentPlansCollection:
         def __init__(self):

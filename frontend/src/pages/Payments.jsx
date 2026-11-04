@@ -16,6 +16,7 @@ const OPERATORS = [
 ];
 const FINAL_STATUSES = new Set(["paid", "failed", "cancelled", "expired", "refunded"]);
 const FAILED_STATUSES = new Set(["failed", "cancelled", "expired"]);
+const MAX_PURCHASE_UNITS = 10_000;
 
 function errorMessage(error, fallback) {
     return error?.response?.data?.detail || error?.message || fallback;
@@ -218,6 +219,7 @@ export default function Payments() {
     const [loadingPlans, setLoadingPlans] = useState(true);
     const [plansError, setPlansError] = useState("");
     const [selectedPlan, setSelectedPlan] = useState(null);
+    const [quantity, setQuantity] = useState(1);
     const [operator, setOperator] = useState("mtn_momo");
     const [phoneNumber, setPhoneNumber] = useState("");
     const [creatingOrder, setCreatingOrder] = useState(false);
@@ -288,10 +290,23 @@ export default function Payments() {
     }, [tokenPlans]);
 
     const step = order ? 3 : selectedPlan ? 2 : 1;
+    const selectedOffline = selectedPlan?.product_type === "offline_access";
+    const baseQuantity = selectedPlan
+        ? (selectedOffline ? selectedPlan.duration_days / 30 : selectedPlan.token_quantity)
+        : 1;
+    const unitPrice = selectedPlan && Number.isInteger(baseQuantity) && baseQuantity > 0
+        ? selectedPlan.amount / baseQuantity
+        : 0;
+    const totalPrice = unitPrice * quantity;
+    const validQuantity = Number.isInteger(quantity)
+        && quantity >= 1
+        && quantity <= MAX_PURCHASE_UNITS
+        && Number.isInteger(totalPrice)
+        && totalPrice <= 10_000_000;
 
     const createCheckout = async (event) => {
         event.preventDefault();
-        if (!selectedPlan) return;
+        if (!selectedPlan || !validQuantity) return;
         setCreatingOrder(true);
         setStatusError("");
         setOrder(null);
@@ -302,6 +317,7 @@ export default function Payments() {
                     product_id: selectedPlan.id,
                     payment_method: operator,
                     phone_number: phoneNumber,
+                    quantity,
                 },
                 { headers: { "Idempotency-Key": window.crypto.randomUUID() } },
             );
@@ -316,6 +332,7 @@ export default function Payments() {
 
     const selectPlan = (plan) => {
         setSelectedPlan(plan);
+        setQuantity(plan.product_type === "offline_access" ? plan.duration_days / 30 : plan.token_quantity);
         setOrder(null);
         setStatusError("");
         window.setTimeout(() => {
@@ -328,9 +345,8 @@ export default function Payments() {
         setStatusError("");
     };
 
-    const selectedOffline = selectedPlan?.product_type === "offline_access";
     const selectedPerk = selectedPlan
-        ? (selectedOffline ? `${selectedPlan.duration_days} days offline access` : `${selectedPlan.token_quantity} AI tokens`)
+        ? `${formatPrice(unitPrice)} per ${selectedOffline ? "month" : "token"}`
         : "";
     const activeOperator = OPERATORS.find((item) => item.id === operator);
 
@@ -409,6 +425,29 @@ export default function Payments() {
                             You’ll receive a payment prompt on your phone. Approve it to complete your purchase.
                         </p>
 
+                        <div className="mt-6 max-w-md space-y-2">
+                            <Label htmlFor="payment-quantity">
+                                {selectedOffline ? "Number of months" : "Number of AI tokens"}
+                            </Label>
+                            <Input
+                                id="payment-quantity"
+                                type="number"
+                                inputMode="numeric"
+                                min="1"
+                                max={MAX_PURCHASE_UNITS}
+                                step="1"
+                                value={quantity}
+                                onChange={(event) => setQuantity(Number(event.target.value))}
+                                required
+                                aria-invalid={!validQuantity}
+                                className="h-11 text-base"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                {formatPrice(unitPrice)} per {selectedOffline ? "month" : "token"}.
+                                {selectedOffline ? " Each month adds 30 days of access." : ""}
+                            </p>
+                        </div>
+
                         <fieldset className="mt-6">
                             <legend className="mb-3 text-sm font-medium">Choose a mobile money operator</legend>
                             <div className="grid gap-3 sm:grid-cols-2">
@@ -462,11 +501,11 @@ export default function Payments() {
                         <Button
                             type="submit"
                             size="lg"
-                            disabled={creatingOrder || !phoneNumber.trim()}
+                            disabled={creatingOrder || !phoneNumber.trim() || !validQuantity}
                             className="mt-6 w-full gap-2 sm:w-auto"
                         >
                             {creatingOrder ? <Loader2 className="h-4 w-4 animate-spin" /> : <Smartphone className="h-4 w-4" />}
-                            {creatingOrder ? "Starting payment…" : `Pay ${formatPrice(selectedPlan.amount)}`}
+                            {creatingOrder ? "Starting payment…" : `Pay ${formatPrice(totalPrice)}`}
                         </Button>
                     </form>
 
@@ -477,7 +516,10 @@ export default function Payments() {
                                 {selectedOffline ? <BookOpen className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
                             </span>
                             <div className="min-w-0">
-                                <p className="font-medium">{selectedPlan.name}</p>
+                                <p className="font-medium">
+                                    {selectedOffline ? `${quantity} ${quantity === 1 ? "month" : "months"} offline access`
+                                        : `${new Intl.NumberFormat().format(quantity)} AI tokens`}
+                                </p>
                                 <p className="text-sm text-muted-foreground">{selectedPerk}</p>
                             </div>
                         </div>
@@ -488,7 +530,7 @@ export default function Payments() {
                             </div>
                             <div className="flex justify-between border-t border-border pt-3 text-base">
                                 <dt className="font-semibold">Total</dt>
-                                <dd className="font-bold tabular-nums">{formatPrice(selectedPlan.amount)}</dd>
+                                <dd className="font-bold tabular-nums">{formatPrice(totalPrice)}</dd>
                             </div>
                         </dl>
                         <p className="mt-4 flex items-start gap-2 text-xs text-muted-foreground">
