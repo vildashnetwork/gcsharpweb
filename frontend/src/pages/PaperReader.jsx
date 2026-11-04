@@ -36,7 +36,7 @@ const PaperPdfViewer = memo(function PaperPdfViewer({ fileUrl }) {
             <Viewer
                 fileUrl={fileUrl}
                 plugins={[layoutPlugin]}
-                defaultScale={SpecialZoomLevel.PageFit}
+            defaultScale={SpecialZoomLevel.PageWidth}
                 enableSmoothScroll={true}
             />
         </Worker>
@@ -782,7 +782,7 @@ export default function PaperReader() {
             <div className="grid lg:grid-cols-[1.4fr_1fr] gap-6">
                 {/* PDF viewer */}
                 <div ref={containerRef} className="rounded-xl border border-border bg-card overflow-hidden relative">
-                    <div className="max-h-[80vh] overflow-auto bg-secondary/20">
+                    <div className="h-[80vh] min-h-[480px] overflow-auto bg-secondary/20">
                         {pdfError ? (
                             <div className="py-20 text-center text-sm text-muted-foreground">
                                 Could not load this PDF. Try refreshing the page.
