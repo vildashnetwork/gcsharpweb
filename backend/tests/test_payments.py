@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 from datetime import datetime, timezone
@@ -99,6 +100,36 @@ def test_only_configured_plans_are_sellable():
     assert not payments.valid_plan({**plan, "amount": True})
     assert not payments.valid_plan({**plan, "enabled": False})
     assert not payments.valid_plan({**plan, "duration_days": True})
+
+
+def test_default_plans_are_seeded_without_overwriting_existing_settings():
+    class PaymentPlansCollection:
+        def __init__(self):
+            self.documents = {
+                "ai_tokens_10": {
+                    "_id": "ai_tokens_10",
+                    "enabled": False,
+                    "amount": 700,
+                }
+            }
+
+        async def update_one(self, query, update, upsert):
+            self.documents.setdefault(query["_id"], update["$setOnInsert"])
+
+    class Database:
+        def __init__(self):
+            self.payment_plans = PaymentPlansCollection()
+
+    database = Database()
+    asyncio.run(payments.seed_default_plans(database))
+
+    token_plan = database.payment_plans.documents["ai_tokens_10"]
+    offline_plan = database.payment_plans.documents["offline_access_60d"]
+    assert token_plan["enabled"] is False
+    assert token_plan["amount"] == 700
+    assert payments.valid_plan(offline_plan)
+    assert offline_plan["duration_days"] == 60
+    assert offline_plan["amount"] == 1000
 
 
 def test_transaction_must_match_order_amount_service_currency_and_reference():

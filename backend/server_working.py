@@ -3557,6 +3557,7 @@ async def startup_gc_ai():
 @app.on_event("startup")
 async def startup_payment_indexes():
     try:
+        await payments_module.seed_default_plans(db)
         await db.payment_orders.create_index(
             [("user_id", 1), ("idempotency_key", 1)], unique=True
         )
@@ -3568,9 +3569,9 @@ async def startup_payment_indexes():
         await db.entitlement_ledger.create_index(
             [("order_id", 1), ("action", 1)], unique=True
         )
-        logger.info("Payment indexes ensured")
+        logger.info("Payment plans seeded and payment indexes ensured")
     except Exception as e:  # pragma: no cover - deployment may manage indexes separately
-        logger.warning(f"Payment index setup skipped: {e}")
+        logger.error(f"Payment plan/index setup failed: {e}")
 
 # ============================================================
 # Scheduler

@@ -26,6 +26,30 @@ PAYMENT_METHODS = {
 }
 FINAL_FAILURE_STATUSES = {"FAILED", "CANCELLED", "EXPIRED"}
 FINAL_SUCCESS_STATUS = "SUCCESS"
+DEFAULT_PLANS = (
+    {
+        "_id": "ai_tokens_10",
+        "product_type": "ai_tokens",
+        "name": "10 AI tokens",
+        "description": "Add 10 AI tokens to your account.",
+        "amount": 500,
+        "currency": "XAF",
+        "duration_days": None,
+        "token_quantity": 10,
+        "enabled": True,
+    },
+    {
+        "_id": "offline_access_60d",
+        "product_type": "offline_access",
+        "name": "2-month offline access",
+        "description": "Extend offline access for 60 days.",
+        "amount": 1000,
+        "currency": "XAF",
+        "duration_days": 60,
+        "token_quantity": None,
+        "enabled": True,
+    },
+)
 
 
 class MesombError(Exception):
@@ -144,6 +168,16 @@ def get_mesomb_client() -> Optional[MesombClient]:
     if not (application_key and access_key and secret_key):
         return None
     return MesombClient(application_key, access_key, secret_key)
+
+
+async def seed_default_plans(db) -> None:
+    """Insert the confirmed launch plans without overwriting existing settings."""
+    for plan in DEFAULT_PLANS:
+        await db.payment_plans.update_one(
+            {"_id": plan["_id"]},
+            {"$setOnInsert": dict(plan)},
+            upsert=True,
+        )
 
 
 def normalize_cameroon_phone(phone_number: str) -> tuple[str, str]:

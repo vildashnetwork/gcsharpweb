@@ -14,31 +14,20 @@ Do not put these values in frontend configuration or commit real credentials.
 If a credential has been shared in chat, rotate it in the MeSomb dashboard
 before enabling payments.
 
-## Plan setup
+## Plans
 
-There are no launch prices in this repository. Plans are therefore not
-automatically seeded or enabled. Add plans to the MongoDB `payment_plans`
-collection only after confirming the product and its XAF price. For example:
+The backend seeds the following confirmed plans into MongoDB's `payment_plans`
+collection at startup. Seeding only inserts missing IDs, so it does not
+overwrite existing plan customizations:
 
-```json
-{
-  "_id": "offline_30d",
-  "product_type": "offline_access",
-  "name": "30-day offline access",
-  "description": "Offline access for 30 days.",
-  "amount": 5000,
-  "currency": "XAF",
-  "duration_days": 30,
-  "token_quantity": null,
-  "enabled": true
-}
-```
+| Plan | Product | Price |
+| --- | --- | ---: |
+| 10 AI tokens | 10 tokens | 500 XAF |
+| 2-month offline access | 60 days | 1,000 XAF |
 
-The example amount is illustrative, not a GC Sharp price. AI-token plans use
-`product_type: "ai_tokens"` and a positive `token_quantity` instead of
-`duration_days`. Only enabled, correctly priced XAF plans are returned or
-accepted. Manage plan changes directly in the backend database; no public plan
-editing endpoint is provided.
+Only enabled, correctly priced XAF plans are returned or accepted. Manage
+future plan changes directly in the backend database; no public plan editing
+endpoint is provided.
 
 ## API
 
@@ -63,6 +52,6 @@ updates, the paid order state, and the entitlement ledger entry are committed
 in a MongoDB transaction. Use a transaction-capable MongoDB deployment (such
 as a replica set).
 
-Before going live, test MTN and Orange with sandbox credentials and configured
-test plans, verify settlement and fees with MeSomb, configure real prices, and
-rotate any credential exposed outside the backend secret manager.
+Before going live, configure valid MeSomb credentials on the backend, test MTN
+and Orange with sandbox credentials, and verify settlement and fees with
+MeSomb. Rotate any credential exposed outside the backend secret manager.
