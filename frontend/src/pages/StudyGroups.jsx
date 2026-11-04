@@ -224,7 +224,7 @@ export default memo(function StudyGroups() {
             setLoaded(true);
             setLoading(false);
         }
-    }, [isChat, navigate]);
+    }, [groupId, isChat, navigate]);
 
     // History arrives oldest -> newest (the endpoint sorts by seq desc, takes the
     // page, then flips it back). We keep that order, page with before_seq, and

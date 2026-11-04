@@ -41,6 +41,7 @@ export default function useGroupSocket(groupId, handlers = {}) {
     useEffect(() => {
         if (!groupId) return undefined;
         closedByUsRef.current = false;
+        const timers = timersRef.current;
 
         const open = () => {
             let socket;
@@ -55,7 +56,7 @@ export default function useGroupSocket(groupId, handlers = {}) {
             socket.onopen = () => {
                 retryRef.current = 0;
                 setConnected(true);
-                timersRef.current.ping = setInterval(() => {
+                timers.ping = setInterval(() => {
                     if (socket.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify({ type: "ping" }));
                     }
@@ -90,8 +91,8 @@ export default function useGroupSocket(groupId, handlers = {}) {
                                 : others;
                         });
                         if (data.typing) {
-                            clearTimeout(timersRef.current.typing[data.user_id]);
-                            timersRef.current.typing[data.user_id] = setTimeout(() => {
+                            clearTimeout(timers.typing[data.user_id]);
+                            timers.typing[data.user_id] = setTimeout(() => {
                                 setTypingUsers((prev) =>
                                     prev.filter((t) => t.user_id !== data.user_id)
                                 );
@@ -133,11 +134,11 @@ export default function useGroupSocket(groupId, handlers = {}) {
             socket.onclose = () => {
                 setConnected(false);
                 setTypingUsers([]);
-                clearInterval(timersRef.current.ping);
+                clearInterval(timers.ping);
                 if (closedByUsRef.current) return;
                 const attempt = (retryRef.current += 1);
                 const delay = Math.min(1200 * attempt, MAX_BACKOFF_MS);
-                timersRef.current.reconnect = setTimeout(open, delay);
+                timers.reconnect = setTimeout(open, delay);
             };
         };
 
@@ -145,9 +146,9 @@ export default function useGroupSocket(groupId, handlers = {}) {
 
         return () => {
             closedByUsRef.current = true;
-            clearInterval(timersRef.current.ping);
-            clearTimeout(timersRef.current.reconnect);
-            Object.values(timersRef.current.typing).forEach(clearTimeout);
+            clearInterval(timers.ping);
+            clearTimeout(timers.reconnect);
+            Object.values(timers.typing).forEach(clearTimeout);
             const socket = socketRef.current;
             if (socket && socket.readyState <= WebSocket.OPEN) {
                 socket.close();
