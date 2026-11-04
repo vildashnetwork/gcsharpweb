@@ -46,6 +46,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 # If the package is somehow unavailable the app still boots and falls back to
 # the legacy OpenRouter-only path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import payments as payments_module
+
 try:
     from gc_ai import init_engine, get_engine
     from gc_ai.engine import MODE_LABELS as GC_AI_MODE_LABELS
@@ -3443,6 +3445,7 @@ async def root():
             "ai_research": "/api/ai/research",
             "ai_brain": "/api/ai/brain/stats",
             "ai_health": "/api/ai/health",
+            "payments": "/api/payments/plans",
             "study_groups": "/api/groups",
             "study_groups_socket": "/api/ws/groups/{group_id}",
             "docs": "/docs"
@@ -3450,6 +3453,9 @@ async def root():
     }
 
 app.include_router(api_router)
+
+# MeSomb Mobile Money checkout and transaction verification.
+app.include_router(payments_module.configure(db, get_current_user))
 
 # ============================================================
 # Study Groups - real-time group study rooms
@@ -3524,6 +3530,25 @@ async def startup_gc_ai():
         logger.info("Study group indexes ensured")
     except Exception as e:  # pragma: no cover - indexes are an optimisation
         logger.warning(f"Study group index setup skipped: {e}")
+
+
+@app.on_event("startup")
+async def startup_payment_indexes():
+    try:
+        await db.payment_orders.create_index(
+            [("user_id", 1), ("idempotency_key", 1)], unique=True
+        )
+        await db.payment_orders.create_index(
+            [("provider_reference", 1)], unique=True, sparse=True
+        )
+        await db.payment_orders.create_index([("user_id", 1), ("created_at", -1)])
+        await db.payment_orders.create_index([("status", 1), ("updated_at", 1)])
+        await db.entitlement_ledger.create_index(
+            [("order_id", 1), ("action", 1)], unique=True
+        )
+        logger.info("Payment indexes ensured")
+    except Exception as e:  # pragma: no cover - deployment may manage indexes separately
+        logger.warning(f"Payment index setup skipped: {e}")
 
 # ============================================================
 # Scheduler

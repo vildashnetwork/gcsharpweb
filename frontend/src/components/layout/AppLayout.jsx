@@ -275,7 +275,7 @@ import { useTheme } from "../../context/ThemeContext";
 import {
     LayoutGrid, BookOpen, Bot, BarChart3, Presentation, Settings as SettingsIcon,
     GraduationCap, Upload, HelpCircle, LogOut, Search, Bell, Moon, Sun, Menu, X, Video,
-    Check, XCircle, Info, AlertCircle, Flame, Users
+    Check, XCircle, Info, AlertCircle, Flame, Users, Coins
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -297,6 +297,7 @@ const NAV = [
     { key: "study", label: "Study Center", icon: BookOpen, path: "/study" },
     { key: "groups", label: "Study Groups", icon: Users, path: "/groups" },
     { key: "ai", label: "AI Assistant", icon: Bot, path: "/ai" },
+    { key: "payments", label: "Buy Tokens & Access", icon: Coins, path: "/buy-tokens" },
     { key: "analytics", label: "Analytics", icon: BarChart3, path: "/analytics" },
     { key: "lesson-videos", label: "Lesson Videos", icon: Video, path: "/videos" },
     { key: "teacher", label: "Teacher Portal", icon: Presentation, path: "/teacher" },

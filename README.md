@@ -6,6 +6,7 @@ Level, HND and Concours.
 - `backend/` — FastAPI + MongoDB API (`server_working.py` is the app entry point)
 - `frontend/` — React (CRA + craco) single page app
 - `backend/gc_ai/` — **GC AI**, the self-contained intelligence layer
+- `backend/PAYMENTS.md` — MeSomb MTN/Orange payment API and configuration
 
 ---
 
@@ -88,4 +89,3 @@ python tests/check_web_search.py                 # live web search providers
 python tests/check_gc_ai_web_learning.py         # full learn-from-web loop
 python tests/gc_ai_server_smoke.py               # API wiring + legacy client
 ```
-

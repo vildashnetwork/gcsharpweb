@@ -142,6 +142,7 @@ import VideoLibrary from "./pages/VideoLibrary";
 import SearchPage from "./pages/SearchPage";
 import { Loader2 } from "lucide-react";
 import StudyGroups from "./pages/StudyGroups";
+import Payments from "@/pages/Payments";
 // 
 function FullLoader() {
     return (
@@ -331,6 +332,15 @@ function AppRouter() {
                 element={
                     <Protected title="AI Tutor">
                         <AITutor />
+                    </Protected>
+                }
+            />
+
+            <Route
+                path="/buy-tokens"
+                element={
+                    <Protected title="Buy Tokens & Offline Access">
+                        <Payments />
                     </Protected>
                 }
             />
